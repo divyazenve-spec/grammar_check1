@@ -1,0 +1,15 @@
+# Python & Autocorrect service
+autocorrect_service/.runtime/
+autocorrect_service/__pycache__/
+*.pyc
+autocorrect_service/venv/
+.env
+
+# Database
+server/data/
+*.mv.db
+*.trace.db
+
+# Logs & temp
+*.log
+.DS_Store
