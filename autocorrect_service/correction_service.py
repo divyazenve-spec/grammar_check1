@@ -33,8 +33,68 @@ def load_tool():
     return TOOL
 
 
+# Common veterinary and clinical words to prioritize for full word spelling resolution
+VET_WORDS = {
+    'dog', 'dogs', 'cat', 'cats', 'canine', 'feline', 'bovine', 'equine', 'puppy', 'kitten', 
+    'pet', 'pets', 'fever', 'vomit', 'vomiting', 'diarrhea', 'cough', 'coughing', 'pain', 
+    'ache', 'aches', 'eating', 'eat', 'eats', 'ate', 'appetite', 'stool', 'urine', 'lethargic', 
+    'lethargy', 'abdomen', 'abdominal', 'stomach', 'breath', 'breathing', 'wound', 'injury', 
+    'blood', 'pulse', 'mucous', 'swelling', 'weight', 'temperature', 'itch', 'itching', 'skin', 
+    'ear', 'ears', 'eye', 'eyes', 'teeth', 'dental', 'tail', 'leg', 'legs', 'paw', 'paws', 
+    'heart', 'lung', 'lungs'
+}
+
+# Known abbreviations, acronyms, and measurement units to disallow as spelling corrections
+KNOWN_ABBREVIATIONS = {
+    'dr', 'mr', 'mrs', 'ms', 'prof', 'kg', 'gm', 'mg', 'ml', 'cm', 'mm', 'km', 
+    'hr', 'hrs', 'min', 'mins', 'sec', 'secs', 'vs', 'dept', 'avg', 'est', 
+    'approx', 'tel', 'fax', 'no', 'nos', 'fig', 'figs', 'inc', 'corp', 'co', 
+    'ltd', 'assoc', 'univ'
+}
+
+
+def is_abbreviation(candidate, original):
+    """
+    Detects whether a candidate is an abbreviation/acronym rather than a fully spelled-out word.
+    """
+    if not candidate:
+        return True
+    # Disallow all-uppercase acronyms (e.g. DG, SG, PR, MD, TV, USA) unless user originally typed uppercase
+    if not original.isupper() and candidate.isupper() and len(candidate) >= 2:
+        return True
+    # Disallow dot abbreviations (e.g. Dr., etc., vs.)
+    if '.' in candidate:
+        return True
+    # Disallow known abbreviations and unit codes
+    if candidate.lower() in KNOWN_ABBREVIATIONS:
+        return True
+    # In English, real spelled-out words with length > 1 must contain at least one vowel
+    if len(candidate) > 1 and not any(ch in 'aeiouyAEIOUY' for ch in candidate):
+        return True
+    return False
+
+
+def pick_best_replacement(original, replacements):
+    """
+    Selects the best genuine, spelled-out word candidate, strictly eliminating abbreviations.
+    """
+    if not replacements:
+        return original
+    valid = [r for r in replacements if not is_abbreviation(r, original)]
+    if not valid:
+        return replacements[0]
+
+    # Prioritize clinical/veterinary domain words (e.g., 'dg' -> 'dog' instead of 'do')
+    for cand in valid:
+        if cand.lower() in VET_WORDS:
+            return cand
+
+    # Otherwise return the highest-ranked non-abbreviation word
+    return valid[0]
+
+
 def _autocorrect_single_stage(tool, text):
-    """Executes a full iterative autocorrection stage resolving conflicting rules."""
+    """Executes a full iterative autocorrection stage resolving conflicting rules without abbreviations."""
     corrected, seen, history = text, {text}, []
     for _ in range(8):
         matches = sorted(tool.check(corrected), key=lambda match: match.offset)
@@ -53,8 +113,9 @@ def _autocorrect_single_stage(tool, text):
             start, end = match.offset, match.offset + match.error_length
             if start < cursor or not 0 <= start <= end <= len(corrected):
                 continue
-            replacement, before = match.replacements[0], corrected[start:end]
-            if replacement == before:
+            before = corrected[start:end]
+            replacement = pick_best_replacement(before, match.replacements)
+            if replacement == before or is_abbreviation(replacement, before):
                 continue
             parts.extend((corrected[cursor:start], replacement))
             cursor = end
@@ -72,32 +133,34 @@ def _autocorrect_single_stage(tool, text):
 def correct_text(text):
     """
     Two-stage cascaded autocorrection:
-    Stage 1: Autocorrects initial user input for grammatical and spelling errors.
+    Stage 1: Autocorrects initial user input for spelling errors, strictly avoiding abbreviations.
     Stage 2: The output of Stage 1 again undergoes autocorrection to ensure that
-             fixing spelling/syntax has not introduced or revealed secondary grammatical issues.
+             fixing spelling has not introduced or revealed secondary grammatical issues.
     """
     original = text.strip()
     with LOCK:
         tool = load_tool()
 
-        # Pass 1: Autocorrect the user input
+        # Pass 1: Autocorrect the user input (spelling only, fully spelled-out words)
         first_pass_output, history_pass1 = _autocorrect_single_stage(tool, original)
 
         # Pass 2: The output again undergoes full autocorrection
         second_pass_output, history_pass2 = _autocorrect_single_stage(tool, first_pass_output)
 
-        # Tool standard fallback check on the second-pass output to catch any remaining edge cases
-        final_corrected = tool.correct(second_pass_output) if second_pass_output else second_pass_output
+        final_corrected = second_pass_output
 
         history = history_pass1 + history_pass2
 
-        # Show differences between the original and final corrected text
+        # Show differences between the original and final corrected text, excluding abbreviations
         old, new = re.findall(r"\s+|\S+", original), re.findall(r"\s+|\S+", final_corrected)
         edits = []
         for tag, i, j, a, b in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
             if tag == "equal":
                 continue
             before, after = "".join(old[i:j]), "".join(new[a:b])
+            # Never suggest an abbreviation as a replacement
+            if is_abbreviation(after, before):
+                continue
             spelling = any(kind == "misspelling" and src in before and dst in after for src, dst, kind, _ in history)
             edits.append({"type": "Spelling" if spelling else "Grammar", "original": before,
                           "replacement": after, "message": "Review this suggested change."})
