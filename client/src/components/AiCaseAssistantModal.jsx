@@ -273,7 +273,13 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                         borderRadius: '50%',
                         background: isChecking ? '#F59E0B' : '#10B981'
                       }} />
-                      <span>{isChecking ? 'Checking...' : 'Spelling & Grammar Active'}</span>
+                      <span>
+                        {isChecking 
+                          ? 'Checking...' 
+                          : (correctionResult?.grammar_engine?.includes('Hugging Face') 
+                              ? 'Hugging Face AI Active' 
+                              : 'Spelling & Grammar Active')}
+                      </span>
                     </div>
 
                     {/* Manual Check Button */}
@@ -407,6 +413,26 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                         <span>Accept All Corrections</span>
                       </button>
                     </div>
+
+                    {/* Hugging Face Status notice */}
+                    {correctionResult?.huggingface_status && correctionResult.huggingface_status.includes('missing Serverless Inference permission') && (
+                      <div style={{
+                        background: '#EFF6FF',
+                        border: '1px solid #BFDBFE',
+                        borderRadius: '6px',
+                        padding: '6px 10px',
+                        fontSize: '11px',
+                        color: '#1E40AF',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}>
+                        <Sparkles size={13} color="#2563EB" />
+                        <span>Hugging Face token integrated. (To enable Serverless Inference, check "Make calls to the Serverless Inference API" on huggingface.co/settings/tokens; local LanguageTool engine is actively correcting text).</span>
+                      </div>
+                    )}
+
+
 
                     {/* Proposed text preview */}
                     {correctionResult.corrected && correctionResult.corrected !== symptoms && (

@@ -2,10 +2,13 @@
 
 import atexit
 import difflib
+import json
 import logging
 import os
 import re
 import threading
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -353,13 +356,91 @@ def enhance_clinical_grammar(text):
     return corrected, grammar_changes
 
 
+DEFAULT_HUGGINGFACE_API_KEY = ""
+
+
+def get_huggingface_api_key():
+    """Retrieves Hugging Face API key from environment, .env file, or configured default."""
+    key = os.environ.get("HUGGINGFACE_API_KEY")
+    if key and key.strip():
+        return key.strip()
+    env_file = ROOT / ".env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                if line.startswith("HUGGINGFACE_API_KEY="):
+                    return line.split("=", 1)[1].strip()
+        except Exception:
+            pass
+    return DEFAULT_HUGGINGFACE_API_KEY
+
+
+def check_grammar_with_huggingface(text):
+    """
+    Uses Hugging Face Serverless Inference API (e.g. pszemraj/flan-t5-large-grammar-synthesis)
+    to perform AI-powered neural grammar and spelling correction.
+    Returns (corrected_text, grammar_changes, status_str).
+    """
+    api_key = get_huggingface_api_key()
+    if not api_key:
+        return None, [], "No Hugging Face API key configured"
+
+    model_name = os.environ.get("HUGGINGFACE_MODEL", "pszemraj/flan-t5-large-grammar-synthesis")
+    url = f"https://router.huggingface.co/hf-inference/models/{model_name}"
+
+    payload = {
+        "inputs": text,
+        "parameters": {
+            "max_new_tokens": 128
+        }
+    }
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            data = json.loads(res.read().decode("utf-8"))
+            if isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
+                hf_corrected = data[0]["generated_text"].strip()
+                if hf_corrected and hf_corrected != text:
+                    changes = []
+                    old_tokens = re.findall(r"\s+|\S+", text)
+                    new_tokens = re.findall(r"\s+|\S+", hf_corrected)
+                    for tag, i, j, a, b in difflib.SequenceMatcher(None, old_tokens, new_tokens, autojunk=False).get_opcodes():
+                        if tag != "equal":
+                            changes.append(("".join(old_tokens[i:j]), "".join(new_tokens[a:b]), "Grammar", "Hugging Face neural correction"))
+                    return hf_corrected, changes, f"Hugging Face ({model_name.split('/')[-1]}) Active"
+    except urllib.error.HTTPError as e:
+        err_str = e.read().decode("utf-8")
+        if "sufficient permissions" in err_str:
+            return None, [], "Hugging Face token missing Serverless Inference permission (using local engine)"
+        return None, [], f"Hugging Face HTTP {e.code}"
+    except Exception as e:
+        return None, [], f"Hugging Face error: {str(e)}"
+
+    return None, [], "Hugging Face empty response"
+
+
 def grammar_check_stage(tool, text):
     """
     STAGE 2: Grammar Check.
     Applied to the text AFTER spelling has been checked and corrected.
-    Uses language_tool_python engine: tool = language_tool_python.LanguageTool('en-US')
-    and tool.correct(text) to automatically fix errors cleanly.
+    1. Attempts Hugging Face Neural Grammar Correction via Serverless Inference API.
+    2. Falls back cleanly to LanguageTool tool.correct(text) + Enhanced Clinical Grammar.
     """
+    # 2A. Attempt Hugging Face Neural Grammar Correction
+    hf_corrected, hf_changes, hf_status = check_grammar_with_huggingface(text)
+    if hf_corrected:
+        return hf_corrected, hf_changes, hf_status
+
+    # 2B. Fallback to LanguageTool tool.correct(text) + Enhanced Clinical Grammar
     enhanced_text, enhanced_changes = enhance_clinical_grammar(text)
 
     # Automatically fixes errors cleanly using LanguageTool tool.correct
@@ -375,7 +456,7 @@ def grammar_check_stage(tool, text):
     except Exception:
         pass
 
-    return corrected_text, history
+    return corrected_text, history, hf_status
 
 
 def correct_text(text):
@@ -401,8 +482,8 @@ def correct_text(text):
         # STEP 1: Apply spell check (Stage 1) to the raw user input
         after_spell_check, spell_history = spell_check_stage(tool, original)
 
-        # STEP 2: Apply grammar check (Stage 2) to the spell-checked text
-        after_grammar_check, grammar_history = grammar_check_stage(tool, after_spell_check)
+        # STEP 2: Apply grammar check (Stage 2: Hugging Face with fallback) to the spell-checked text
+        after_grammar_check, grammar_history, hf_status = grammar_check_stage(tool, after_spell_check)
 
         final_corrected = after_grammar_check
 
@@ -472,11 +553,14 @@ def correct_text(text):
             if getattr(m, "rule_issue_type", "") != "misspelling"
         ]
 
+        engine_name = "Hugging Face (flan-t5-large)" if "Active" in hf_status else "Enhanced Clinical Grammar + LanguageTool"
+
         return {
             "original": original,
             "corrected": final_corrected,
             "spell_checked": after_spell_check,
-            "grammar_engine": "Enhanced Clinical Grammar + LanguageTool",
+            "grammar_engine": engine_name,
+            "huggingface_status": hf_status,
             "edits": edits,
             "grammar": {
                 "issue_count": len(remaining_grammar_issues),

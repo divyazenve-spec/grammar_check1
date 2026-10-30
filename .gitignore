@@ -13,3 +13,6 @@ server/data/
 # Logs & temp
 *.log
 .DS_Store
+
+autocorrect_service/.env
+**/.env
