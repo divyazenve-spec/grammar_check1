@@ -98,12 +98,33 @@ def pick_best_spelling_replacement(original, replacements):
     return valid[0]
 
 
+COMMON_CLINICAL_SHORTHANDS = {
+    'dg': 'dog',
+    'ct': 'cat',
+    'pt': 'patient',
+    'pup': 'puppy',
+    'kit': 'kitten',
+    'temp': 'temperature',
+    'abd': 'abdomen'
+}
+
+
 def spell_check_stage(tool, text):
     """
     STAGE 1: Spell Check.
     Detects and corrects spelling errors in user input, resolving misspelled tokens to full words.
     """
     corrected, seen, history = text, {text}, []
+
+    # Expand known clinical shorthands first
+    for short, full in COMMON_CLINICAL_SHORTHANDS.items():
+        pattern = re.compile(r'\b(' + short + r')\b', flags=re.IGNORECASE)
+        for m in pattern.finditer(corrected):
+            orig_match = m.group(1)
+            repl = full.capitalize() if orig_match.istitle() else full
+            history.append((orig_match, repl, 'Spelling', f"Spelling expansion: '{orig_match}' -> '{repl}'."))
+        corrected = pattern.sub(lambda m: full.capitalize() if m.group(1).istitle() else full, corrected)
+
     for _ in range(6):
         matches = sorted(tool.check(corrected), key=lambda match: match.offset)
         spelling_matches = [
@@ -135,13 +156,152 @@ def spell_check_stage(tool, text):
     return corrected, history
 
 
+SINGULAR_CLINICAL_SUBJECTS = {
+    'dog', 'cat', 'patient', 'puppy', 'kitten', 'pet', 'animal', 'canine', 'feline', 
+    'bovine', 'equine', 'rabbit', 'bird', 'horse', 'cow', 'calf', 'heifer', 'lamb', 
+    'sheep', 'goat', 'pig', 'piglet', 'hamster', 'ferret'
+}
+
+PLURAL_CLINICAL_SUBJECTS = {
+    'dogs', 'cats', 'patients', 'puppies', 'kittens', 'pets', 'animals', 'canines', 
+    'felines', 'rabbits', 'birds', 'horses', 'cows', 'calves', 'lambs', 
+    'goats', 'pigs', 'hamsters', 'ferrets'
+}
+
+CLINICAL_PROGRESSIVE_VERBS = {
+    'vomit': 'vomiting',
+    'cough': 'coughing',
+    'bleed': 'bleeding',
+    'limp': 'limping',
+    'scratch': 'scratching',
+    'shake': 'shaking',
+    'seize': 'seizing',
+    'drool': 'drooling',
+    'pant': 'panting',
+    'tremble': 'trembling',
+    'sneeze': 'sneezing',
+    'whine': 'whining'
+}
+
+CLINICAL_PASSIVE_VERBS = {
+    'bite': 'bitten',
+    'eat': 'eaten',
+    'give': 'given',
+    'take': 'taken',
+    'see': 'seen',
+    'strike': 'struck'
+}
+
+
+def enhance_clinical_grammar(text):
+    """
+    ENHANCED GRAMMAR ENGINE FOR CLINICAL COMPLAINT TEXT:
+    Resolves subject-verb agreement (have/has, is/are, do/does not),
+    progressive and passive verb forms, sentence capitalization, and punctuation.
+    """
+    corrected = text
+    grammar_changes = []
+
+    # 1. Singular subject + 'have' -> 'has'
+    pattern_have = re.compile(
+        r'\b((?:(?:the|a|an|this|that|my|our|his|her|its|one|each|every)\s+)?(?:[a-zA-Z-]+\s+)?'
+        r'(?:' + '|'.join(SINGULAR_CLINICAL_SUBJECTS) + r'))\s+(have)\b',
+        flags=re.IGNORECASE
+    )
+    for m in pattern_have.finditer(corrected):
+        grammar_changes.append(('have', 'has', 'Grammar', f"Subject-verb agreement: use 'has' with singular '{m.group(1).strip()}'."))
+    corrected = pattern_have.sub(r'\1 has', corrected)
+
+    # 2. Singular subject + 'are' -> 'is'
+    pattern_sing_are = re.compile(
+        r'\b((?:(?:the|a|an|this|that|my|our|his|her|its|one|each|every)\s+)?(?:[a-zA-Z-]+\s+)?'
+        r'(?:' + '|'.join(SINGULAR_CLINICAL_SUBJECTS) + r'))\s+(are)\b',
+        flags=re.IGNORECASE
+    )
+    for m in pattern_sing_are.finditer(corrected):
+        grammar_changes.append(('are', 'is', 'Grammar', f"Subject-verb agreement: use 'is' with singular subject '{m.group(1).strip()}'."))
+    corrected = pattern_sing_are.sub(r'\1 is', corrected)
+
+    # 3. Plural subject + 'is' -> 'are'
+    pattern_plur_is = re.compile(
+        r'\b((?:(?:the|these|those|my|our|his|her|its|both|all|several|two|three)\s+)?(?:[a-zA-Z-]+\s+)?'
+        r'(?:' + '|'.join(PLURAL_CLINICAL_SUBJECTS) + r'))\s+(is)\b',
+        flags=re.IGNORECASE
+    )
+    for m in pattern_plur_is.finditer(corrected):
+        grammar_changes.append(('is', 'are', 'Grammar', f"Subject-verb agreement: use 'are' with plural subject '{m.group(1).strip()}'."))
+    corrected = pattern_plur_is.sub(r'\1 are', corrected)
+
+    # 4. Singular subject + 'do not' / 'dont' -> 'does not' / 'doesn't'
+    pattern_do_not = re.compile(
+        r'\b((?:(?:the|a|an|this|that|my|our|his|her|its|one|each|every)\s+)?(?:[a-zA-Z-]+\s+)?'
+        r'(?:' + '|'.join(SINGULAR_CLINICAL_SUBJECTS) + r'))\s+(do\s+not|dont|don\'t)\b',
+        flags=re.IGNORECASE
+    )
+    for m in pattern_do_not.finditer(corrected):
+        neg = m.group(2)
+        repl_neg = "doesn't" if ("'" in neg or neg.lower() == "dont") else "does not"
+        grammar_changes.append((neg, repl_neg, 'Grammar', f"Subject-verb agreement: use '{repl_neg}' with singular subject '{m.group(1).strip()}'."))
+    corrected = pattern_do_not.sub(
+        lambda m: f"{m.group(1)} " + ("doesn't" if ("'" in m.group(2) or m.group(2).lower() == "dont") else "does not"), 
+        corrected
+    )
+
+    # 5. Coordinated verb agreement after singular subjects (e.g. 'and do not' -> 'and does not', 'and are' -> 'and is')
+    pattern_coord = re.compile(
+        r'\b((?:' + '|'.join(SINGULAR_CLINICAL_SUBJECTS) + r')\b[^.!?\n]*?\band\s+)(are|were|do\s+not|dont|don\'t|have)\b',
+        flags=re.IGNORECASE
+    )
+    coord_mapping = {
+        'are': 'is',
+        'were': 'was',
+        'have': 'has',
+        'do not': 'does not',
+        'dont': "doesn't",
+        "don't": "doesn't"
+    }
+    for m in pattern_coord.finditer(corrected):
+        verb = re.sub(r'\s+', ' ', m.group(2).lower())
+        repl = coord_mapping.get(verb, verb)
+        grammar_changes.append((m.group(2), repl, 'Grammar', f"Coordinated verb agreement: use '{repl}'."))
+    corrected = pattern_coord.sub(
+        lambda m: m.group(1) + coord_mapping.get(re.sub(r'\s+', ' ', m.group(2).lower()), m.group(2)), 
+        corrected
+    )
+
+    # 6. Progressive aspect after be-verbs (e.g. is vomit -> is vomiting)
+    for stem, ing in CLINICAL_PROGRESSIVE_VERBS.items():
+        pattern_be_v = re.compile(r'\b(is|was|are|were|been)\s+(' + stem + r')\b', flags=re.IGNORECASE)
+        for m in pattern_be_v.finditer(corrected):
+            grammar_changes.append((m.group(2), ing, 'Grammar', f"Verb form: use progressive form '{ing}' after '{m.group(1)}'."))
+        corrected = pattern_be_v.sub(r'\1 ' + ing, corrected)
+
+    # 7. Passive voice / Past participles (e.g. was bite -> was bitten)
+    for stem, part in CLINICAL_PASSIVE_VERBS.items():
+        pattern_pass = re.compile(r'\b(was|is|been|were|got)\s+(' + stem + r')\b', flags=re.IGNORECASE)
+        for m in pattern_pass.finditer(corrected):
+            grammar_changes.append((m.group(2), part, 'Grammar', f"Verb form: use past participle '{part}' in passive construction."))
+        corrected = pattern_pass.sub(r'\1 ' + part, corrected)
+
+    # 8. Sentence-start capitalization (e.g. 'the dog is sick' -> 'The dog is sick')
+    def cap_sent(m):
+        return m.group(1) + m.group(2).upper()
+    corrected = re.sub(r'(^|[.!?]\s+)([a-z])', cap_sent, corrected)
+
+    return corrected, grammar_changes
+
+
 def grammar_check_stage(tool, text):
     """
     STAGE 2: Grammar Check.
     Applied to the text AFTER spelling has been checked and corrected.
-    Handles subject-verb agreement, verb tense, articles, and sentence grammar.
+    Combines clinical grammar enhancement with LanguageTool syntactic parsing.
     """
-    corrected, seen, history = text, {text}, []
+    # 2A. Enhanced Clinical Grammar Rules
+    enhanced_text, enhanced_changes = enhance_clinical_grammar(text)
+
+    # 2B. LanguageTool syntactic rules
+    corrected, seen, history = enhanced_text, {enhanced_text}, list(enhanced_changes)
     for _ in range(6):
         matches = sorted(tool.check(corrected), key=lambda match: match.offset)
         # Select grammar, syntax, and agreement rules (non-misspelling)
