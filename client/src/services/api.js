@@ -589,31 +589,12 @@ export const api = {
     query: (q) => fetchJson(`/search?q=${encodeURIComponent(q || '')}`)
   },
 
-  // AI Assistant Clinical Engine & LanguageTool Autocorrection
+  // AI Assistant Clinical Engine
   ai: {
     diagnose: (data) => fetchJson('/ai-assist/diagnose', {
       method: 'POST',
       body: JSON.stringify(data)
-    }),
-    correctText: async (text) => {
-      try {
-        const response = await fetch('http://127.0.0.1:8000/api/correct', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ text })
-        });
-        if (!response.ok) {
-          const errData = await response.json().catch(() => ({}));
-          throw new Error(errData.error || ('HTTP ' + response.status));
-        }
-        return await response.json();
-      } catch (err) {
-        console.warn('Autocorrect service notice:', err);
-        return { original: text, corrected: text, edits: [] };
-      }
-    }
+    })
   },
 
   // 1-to-1 Chat

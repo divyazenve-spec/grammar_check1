@@ -1,2 +1,0 @@
-language-tool-python==3.4.0
-
