@@ -114,11 +114,25 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
 
   // Accept a single edit suggestion and re-run autocorrection on the updated text
   const handleAcceptSingle = async (edit) => {
-    if (!edit || !edit.original || !edit.replacement) return;
+    if (!edit || edit.original === undefined || edit.replacement === undefined) return;
     setOriginalSymptomsBeforeFix(symptoms);
 
-    // Replace the first exact match in current text
-    const updated = symptoms.replace(edit.original, edit.replacement);
+    let updated = symptoms;
+    // Prefer exact character position replacement if index coordinates match
+    if (typeof edit.startIndex === 'number' && typeof edit.endIndex === 'number' &&
+        symptoms.substring(edit.startIndex, edit.endIndex) === edit.original) {
+      updated = symptoms.substring(0, edit.startIndex) + edit.replacement + symptoms.substring(edit.endIndex);
+    } else {
+      // Safe whole-word boundary replacement to avoid replacing letters inside other words
+      const escaped = edit.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const wordRegex = new RegExp('\\b' + escaped + '\\b');
+      if (wordRegex.test(updated)) {
+        updated = updated.replace(wordRegex, edit.replacement);
+      } else {
+        updated = updated.replace(edit.original, edit.replacement);
+      }
+    }
+
     setSymptoms(updated);
     setIsChecking(true);
 
@@ -259,7 +273,13 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                         borderRadius: '50%',
                         background: isChecking ? '#F59E0B' : '#10B981'
                       }} />
-                      <span>{isChecking ? 'Checking...' : 'LanguageTool Active'}</span>
+                      <span>
+                        {isChecking 
+                          ? 'Checking...' 
+                          : (correctionResult?.grammar_engine 
+                              ? (correctionResult.grammar_engine.includes('OpenAI') ? 'OpenAI AI Active' : 'Spelling & Grammar Active')
+                              : 'Spelling & Grammar Active')}
+                      </span>
                     </div>
 
                     {/* Manual Check Button */}
@@ -394,6 +414,24 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                       </button>
                     </div>
 
+                    {/* OpenAI Quota notice if applicable */}
+                    {correctionResult?.openai_status && correctionResult.openai_status.includes('Quota Exhausted') && (
+                      <div style={{
+                        background: '#FEF3C7',
+                        border: '1px solid #FCD34D',
+                        borderRadius: '6px',
+                        padding: '6px 10px',
+                        fontSize: '11px',
+                        color: '#92400E',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}>
+                        <AlertCircle size={13} color="#D97706" />
+                        <span>OpenAI API Key: quota exhausted on OpenAI billing. Stage 2 is actively handled by the Enhanced Clinical Grammar Engine.</span>
+                      </div>
+                    )}
+
                     {/* Proposed text preview */}
                     {correctionResult.corrected && correctionResult.corrected !== symptoms && (
                       <div style={{
@@ -431,10 +469,10 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                             fontWeight: '700',
                             padding: '1px 5px',
                             borderRadius: '4px',
-                            background: edit.type === 'Spelling' ? '#FEE2E2' : '#E0E7FF',
-                            color: edit.type === 'Spelling' ? '#991B1B' : '#3730A3'
+                            background: edit.stage === 1 || edit.type === 'Spelling' ? '#FEE2E2' : '#E0E7FF',
+                            color: edit.stage === 1 || edit.type === 'Spelling' ? '#991B1B' : '#3730A3'
                           }}>
-                            {edit.type}
+                            {edit.stage_label || (edit.stage === 1 || edit.type === 'Spelling' ? 'Stage 1: Spelling' : 'Stage 2: Grammar')}
                           </span>
 
                           <span style={{

@@ -1,25 +1,24 @@
 """Local grammar and spelling correction using LanguageTool, without PyTorch."""
 
-
 import atexit
 import difflib
+import json
+import logging
 import os
 import re
 import threading
+import urllib.error
+import urllib.request
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parent
 TOOL = None
 LOCK = threading.Lock()
 
 
-
 def load_tool():
     global TOOL
     if TOOL is None:
-        # Java's local socket paths must fit Windows' path constraints. Keep
-        # temporary files under the project rather than an inherited long path.
         temp_dir = ROOT / ".runtime" / "tmp"
         temp_dir.mkdir(parents=True, exist_ok=True)
         os.environ["TEMP"] = str(temp_dir)
@@ -31,11 +30,9 @@ def load_tool():
         os.environ.setdefault("LTP_PATH", str(ROOT / ".runtime" / "languagetool"))
         import language_tool_python
 
-
         TOOL = language_tool_python.LanguageTool("en-US", host="127.0.0.1")
         atexit.register(TOOL.close)
     return TOOL
-
 
 
 # Common veterinary and clinical words to prioritize for full word spelling resolution
@@ -98,6 +95,7 @@ def pick_best_spelling_replacement(original, replacements):
     return valid[0]
 
 
+# Common clinical shorthands and misspellings to expand to full words rather than abbreviations
 COMMON_CLINICAL_SHORTHANDS = {
     'dg': 'dog',
     'ct': 'cat',
@@ -170,13 +168,13 @@ def spell_check_stage(tool, text):
 SINGULAR_CLINICAL_SUBJECTS = {
     'dog', 'cat', 'patient', 'puppy', 'kitten', 'pet', 'animal', 'canine', 'feline', 
     'bovine', 'equine', 'rabbit', 'bird', 'horse', 'cow', 'calf', 'heifer', 'lamb', 
-    'sheep', 'goat', 'pig', 'piglet', 'hamster', 'ferret'
+    'sheep', 'goat', 'pig', 'piglet', 'hamster', 'ferret', 'he', 'she', 'it'
 }
 
 PLURAL_CLINICAL_SUBJECTS = {
     'dogs', 'cats', 'patients', 'puppies', 'kittens', 'pets', 'animals', 'canines', 
     'felines', 'rabbits', 'birds', 'horses', 'cows', 'calves', 'lambs', 
-    'goats', 'pigs', 'hamsters', 'ferrets'
+    'goats', 'pigs', 'hamsters', 'ferrets', 'they', 'we'
 }
 
 CLINICAL_PROGRESSIVE_VERBS = {
@@ -191,7 +189,10 @@ CLINICAL_PROGRESSIVE_VERBS = {
     'pant': 'panting',
     'tremble': 'trembling',
     'sneeze': 'sneezing',
-    'whine': 'whining'
+    'whine': 'whining',
+    'eat': 'eating',
+    'drink': 'drinking',
+    'walk': 'walking'
 }
 
 CLINICAL_PASSIVE_VERBS = {
@@ -206,14 +207,58 @@ CLINICAL_PASSIVE_VERBS = {
 
 def enhance_clinical_grammar(text):
     """
-    ENHANCED GRAMMAR ENGINE FOR CLINICAL COMPLAINT TEXT:
+    ENHANCED GRAMMAR ENGINE FOR CLINICAL COMPLAINT TEXT (STAGE 2):
     Resolves subject-verb agreement (have/has, is/are, do/does not),
-    progressive and passive verb forms, sentence capitalization, and punctuation.
+    progressive and passive verb forms, missing auxiliaries, time agreements,
+    sentence capitalization, and punctuation.
     """
     corrected = text
     grammar_changes = []
 
-    # 1. Singular subject + 'have' -> 'has'
+    # 1. 'is have' / 'was have' -> 'has' / 'had'
+    for m in re.finditer(r'\b(is|was)\s+have\b', corrected, flags=re.IGNORECASE):
+        repl = 'has' if m.group(1).lower() == 'is' else 'had'
+        grammar_changes.append((m.group(0), repl, 'Grammar', f"Auxiliary verb correction: '{m.group(0)}' -> '{repl}'."))
+    corrected = re.sub(r'\bis\s+have\b', 'has', corrected, flags=re.IGNORECASE)
+    corrected = re.sub(r'\bwas\s+have\b', 'had', corrected, flags=re.IGNORECASE)
+
+    # 2. 'is not eat' -> 'is not eating'
+    for stem, ing in CLINICAL_PROGRESSIVE_VERBS.items():
+        pat = re.compile(r'\b(is|are|was|were)\s+not\s+' + stem + r'\b', flags=re.IGNORECASE)
+        for m in pat.finditer(corrected):
+            repl = f"{m.group(1)} not {ing}"
+            grammar_changes.append((m.group(0), repl, 'Grammar', f"Verb aspect: '{m.group(0)}' -> '{repl}'."))
+        corrected = pat.sub(r'\1 not ' + ing, corrected)
+
+    # 3. Missing auxiliary: 'dog not eating' -> 'dog is not eating'
+    subj_pat = r'(?:(?:the|a|an|this|that|my|our|his|her|its)\s+)?(?:' + '|'.join(SINGULAR_CLINICAL_SUBJECTS) + r')'
+    pat_missing_aux = re.compile(r'\b(' + subj_pat + r')\s+not\s+(eating|drinking|walking|vomiting|moving|urinating|defecating)\b', flags=re.IGNORECASE)
+    for m in pat_missing_aux.finditer(corrected):
+        repl = f"{m.group(1)} is not {m.group(2)}"
+        grammar_changes.append((m.group(0), repl, 'Grammar', f"Missing auxiliary verb: added 'is' before 'not {m.group(2)}'."))
+    corrected = pat_missing_aux.sub(r'\1 is not \2', corrected)
+
+    # 4. 'dog having fever' -> 'dog has fever'
+    pat_having = re.compile(r'\b(' + subj_pat + r')\s+having\s+(fever|pain|diarrhea|seizures|seizure|cough|trouble|distension)\b', flags=re.IGNORECASE)
+    for m in pat_having.finditer(corrected):
+        repl = f"{m.group(1)} has {m.group(2)}"
+        grammar_changes.append((m.group(0), repl, 'Grammar', f"Verb aspect: '{m.group(0)}' -> '{repl}'."))
+    corrected = pat_having.sub(r'\1 has \2', corrected)
+
+    # 5. Time units: 'since 2 day' -> 'since 2 days', 'for 1 days' -> 'for 1 day'
+    pat_plural_time = re.compile(r'\b(for|since|past|last)\s+([2-9]|\d{2,})\s+(day|week|month|hour|year)\b', flags=re.IGNORECASE)
+    for m in pat_plural_time.finditer(corrected):
+        repl = f"{m.group(1)} {m.group(2)} {m.group(3)}s"
+        grammar_changes.append((m.group(0), repl, 'Grammar', f"Plural time agreement: '{m.group(3)}' -> '{m.group(3)}s'."))
+    corrected = pat_plural_time.sub(r'\1 \2 \3s', corrected)
+
+    pat_single_time = re.compile(r'\b(for|since|past|last)\s+(1|one)\s+(days|weeks|months|hours|years)\b', flags=re.IGNORECASE)
+    for m in pat_single_time.finditer(corrected):
+        repl = f"{m.group(1)} {m.group(2)} {m.group(3)[:-1]}"
+        grammar_changes.append((m.group(0), repl, 'Grammar', f"Singular time agreement: '{m.group(3)}' -> '{m.group(3)[:-1]}'."))
+    corrected = pat_single_time.sub(lambda m: m.group(1) + ' ' + m.group(2) + ' ' + m.group(3)[:-1], corrected)
+
+    # 6. Singular subject + 'have' -> 'has'
     pattern_have = re.compile(
         r'\b((?:(?:the|a|an|this|that|my|our|his|her|its|one|each|every)\s+)?(?:[a-zA-Z-]+\s+)?'
         r'(?:' + '|'.join(SINGULAR_CLINICAL_SUBJECTS) + r'))\s+(have)\b',
@@ -223,7 +268,7 @@ def enhance_clinical_grammar(text):
         grammar_changes.append(('have', 'has', 'Grammar', f"Subject-verb agreement: use 'has' with singular '{m.group(1).strip()}'."))
     corrected = pattern_have.sub(r'\1 has', corrected)
 
-    # 2. Singular subject + 'are' -> 'is'
+    # 7. Singular subject + 'are' -> 'is'
     pattern_sing_are = re.compile(
         r'\b((?:(?:the|a|an|this|that|my|our|his|her|its|one|each|every)\s+)?(?:[a-zA-Z-]+\s+)?'
         r'(?:' + '|'.join(SINGULAR_CLINICAL_SUBJECTS) + r'))\s+(are)\b',
@@ -233,7 +278,7 @@ def enhance_clinical_grammar(text):
         grammar_changes.append(('are', 'is', 'Grammar', f"Subject-verb agreement: use 'is' with singular subject '{m.group(1).strip()}'."))
     corrected = pattern_sing_are.sub(r'\1 is', corrected)
 
-    # 3. Plural subject + 'is' -> 'are'
+    # 8. Plural subject + 'is' -> 'are'
     pattern_plur_is = re.compile(
         r'\b((?:(?:the|these|those|my|our|his|her|its|both|all|several|two|three)\s+)?(?:[a-zA-Z-]+\s+)?'
         r'(?:' + '|'.join(PLURAL_CLINICAL_SUBJECTS) + r'))\s+(is)\b',
@@ -243,7 +288,7 @@ def enhance_clinical_grammar(text):
         grammar_changes.append(('is', 'are', 'Grammar', f"Subject-verb agreement: use 'are' with plural subject '{m.group(1).strip()}'."))
     corrected = pattern_plur_is.sub(r'\1 are', corrected)
 
-    # 4. Singular subject + 'do not' / 'dont' -> 'does not' / 'doesn't'
+    # 9. Singular subject + 'do not' / 'dont' -> 'does not' / 'doesn\'t'
     pattern_do_not = re.compile(
         r'\b((?:(?:the|a|an|this|that|my|our|his|her|its|one|each|every)\s+)?(?:[a-zA-Z-]+\s+)?'
         r'(?:' + '|'.join(SINGULAR_CLINICAL_SUBJECTS) + r'))\s+(do\s+not|dont|don\'t)\b',
@@ -258,7 +303,7 @@ def enhance_clinical_grammar(text):
         corrected
     )
 
-    # 5. Coordinated verb agreement after singular subjects (e.g. 'and do not' -> 'and does not', 'and are' -> 'and is')
+    # 10. Coordinated verb agreement after singular subjects (e.g. 'and do not' -> 'and does not', 'and have' -> 'and has')
     pattern_coord = re.compile(
         r'\b((?:' + '|'.join(SINGULAR_CLINICAL_SUBJECTS) + r')\b[^.!?\n]*?\band\s+)(are|were|do\s+not|dont|don\'t|have)\b',
         flags=re.IGNORECASE
@@ -280,21 +325,21 @@ def enhance_clinical_grammar(text):
         corrected
     )
 
-    # 6. Progressive aspect after be-verbs (e.g. is vomit -> is vomiting)
+    # 11. Progressive aspect after be-verbs (e.g. is vomit -> is vomiting)
     for stem, ing in CLINICAL_PROGRESSIVE_VERBS.items():
         pattern_be_v = re.compile(r'\b(is|was|are|were|been)\s+(' + stem + r')\b', flags=re.IGNORECASE)
         for m in pattern_be_v.finditer(corrected):
             grammar_changes.append((m.group(2), ing, 'Grammar', f"Verb form: use progressive form '{ing}' after '{m.group(1)}'."))
         corrected = pattern_be_v.sub(r'\1 ' + ing, corrected)
 
-    # 7. Passive voice / Past participles (e.g. was bite -> was bitten)
+    # 12. Passive voice / Past participles (e.g. was bite -> was bitten)
     for stem, part in CLINICAL_PASSIVE_VERBS.items():
         pattern_pass = re.compile(r'\b(was|is|been|were|got)\s+(' + stem + r')\b', flags=re.IGNORECASE)
         for m in pattern_pass.finditer(corrected):
             grammar_changes.append((m.group(2), part, 'Grammar', f"Verb form: use past participle '{part}' in passive construction."))
         corrected = pattern_pass.sub(r'\1 ' + part, corrected)
 
-    # 8. Sentence-start capitalization (e.g. 'the dog is sick' -> 'The dog is sick')
+    # 13. Sentence-start capitalization (e.g. 'the dog is sick' -> 'The dog is sick')
     def cap_sent(m):
         return m.group(1) + m.group(2).upper()
     corrected = re.sub(r'(^|[.!?]\s+)([a-z])', cap_sent, corrected)
@@ -302,7 +347,6 @@ def enhance_clinical_grammar(text):
     return corrected, grammar_changes
 
 
-# OpenAI API key provided by user for grammar checking
 DEFAULT_OPENAI_API_KEY = ""
 
 
@@ -328,13 +372,9 @@ def check_grammar_with_openai(spell_checked_text):
     clinical grammar correction to the spell-checked text.
     Returns (corrected_text, grammar_changes, status_str).
     """
-    import json
-    import urllib.request
-    import urllib.error
-
     api_key = get_openai_api_key()
     if not api_key:
-        return None, [], "No OpenAI API key provided"
+        return None, [], "No OpenAI API key configured"
 
     url = "https://api.openai.com/v1/chat/completions"
     system_prompt = (
@@ -377,14 +417,14 @@ def check_grammar_with_openai(spell_checked_text):
                 for tag, i, j, a, b in difflib.SequenceMatcher(None, old_tokens, new_tokens, autojunk=False).get_opcodes():
                     if tag != "equal":
                         changes.append(("".join(old_tokens[i:j]), "".join(new_tokens[a:b]), "Grammar", explanation))
-                return openai_corrected, changes, "OpenAI (gpt-4o-mini) active"
+                return openai_corrected, changes, "OpenAI (gpt-4o-mini) Active"
     except urllib.error.HTTPError as e:
         err_str = e.read().decode("utf-8")
         if "credit_balance_exhausted" in err_str or "insufficient_quota" in err_str:
-            return None, [], "OpenAI quota exhausted (using enhanced local grammar engine)"
+            return None, [], "OpenAI Quota Exhausted (using Enhanced Clinical Grammar Engine)"
         return None, [], f"OpenAI HTTP {e.code}: {e.reason}"
     except Exception as e:
-        return None, [], f"OpenAI error: {str(e)}"
+        return None, [], f"OpenAI Error: {str(e)}"
 
     return None, [], "OpenAI empty response"
 
@@ -394,7 +434,7 @@ def grammar_check_stage(tool, text):
     STAGE 2: Grammar Check.
     Applied to the text AFTER spelling has been checked and corrected.
     1. Tries OpenAI grammar correction using the provided OpenAI API key.
-    2. If OpenAI is unavailable or credit exhausted, falls back to Enhanced Clinical Grammar + LanguageTool.
+    2. If OpenAI is unavailable or quota exhausted, falls back to Enhanced Clinical Grammar Rules + LanguageTool.
     """
     # 2A. Attempt OpenAI Grammar Correction
     openai_corrected, openai_changes, openai_status = check_grammar_with_openai(text)
@@ -404,6 +444,7 @@ def grammar_check_stage(tool, text):
     # 2B. Fallback to Enhanced Clinical Grammar Rules + LanguageTool
     enhanced_text, enhanced_changes = enhance_clinical_grammar(text)
     corrected, seen, history = enhanced_text, {enhanced_text}, list(enhanced_changes)
+
     for _ in range(6):
         matches = sorted(tool.check(corrected), key=lambda match: match.offset)
         # Select grammar, syntax, and agreement rules (non-misspelling)
@@ -414,16 +455,9 @@ def grammar_check_stage(tool, text):
         if not grammar_matches:
             break
 
-        selected, grammar_sentences = [], set()
-        for match in reversed(grammar_matches):
-            sentence = len(re.findall(r"[.!?\n]", corrected[:match.offset]))
-            if sentence in grammar_sentences:
-                continue
-            grammar_sentences.add(sentence)
-            selected.append(match)
-
+        # Apply all non-overlapping matches from left to right
         parts, cursor, changes = [], 0, []
-        for match in sorted(selected, key=lambda item: item.offset):
+        for match in sorted(grammar_matches, key=lambda item: item.offset):
             start, end = match.offset, match.offset + match.error_length
             if start < cursor or not 0 <= start <= end <= len(corrected):
                 continue
@@ -441,103 +475,90 @@ def grammar_check_stage(tool, text):
         seen.add(updated)
         corrected = updated
         history.extend(changes)
+
     return corrected, history, openai_status
-
-
-def check_grammar(text):
-    """
-    Checks the supplied text for grammar, spelling, punctuation, and style issues.
-
-    Returns:
-        dict: Original text, issue count, detailed issues, and corrected text.
-    """
-    original = text.strip()
-
-    if not original:
-        return {
-            "text": original,
-            "issue_count": 0,
-            "issues": [],
-            "corrected": original,
-        }
-
-    with LOCK:
-        tool = load_tool()
-        matches = tool.check(original)
-        corrected = tool.correct(original)
-
-    issues = []
-
-    for match in matches:
-        start = match.offset
-        end = match.offset + match.error_length
-
-        issues.append(
-            {
-                "type": getattr(match, "rule_issue_type", None) or "grammar",
-                "rule_id": getattr(match, "ruleId", ""),
-                "message": getattr(match, "message", ""),
-                "original": original[start:end],
-                "suggestions": list(getattr(match, "replacements", []) or []),
-                "offset": start,
-                "length": match.error_length,
-                "context": getattr(match, "context", "").strip(),
-            }
-        )
-
-    return {
-        "text": original,
-        "issue_count": len(issues),
-        "issues": issues,
-        "corrected": corrected,
-    }
 
 
 def correct_text(text):
     """
     Two-step pipeline:
-    Step 1: Apply Spell Check to user input to fix misspellings to full words.
-    Step 2: Apply Grammar Check to the spell-checked text to fix subject-verb agreement and syntax.
+    Step 1: Apply Spell Check (Stage 1) to user input to fix misspellings to full words (no abbreviations).
+    Step 2: Apply Grammar Check (Stage 2) to the spell-checked text to fix grammar, agreement, and syntax.
     """
     original = text.strip()
     if not original:
-        return {"original": original, "corrected": original, "edits": [], "grammar": {"issue_count": 0, "issues": []}}
+        return {
+            "original": original, 
+            "corrected": original, 
+            "spell_checked": original,
+            "grammar_engine": "LanguageTool",
+            "openai_status": "Idle",
+            "edits": [], 
+            "grammar": {"issue_count": 0, "issues": []}
+        }
 
     with LOCK:
         tool = load_tool()
 
-        # STEP 1: Apply spell check to the raw user input
+        # STEP 1: Apply spell check (Stage 1) to the raw user input
         after_spell_check, spell_history = spell_check_stage(tool, original)
 
-        # STEP 2: Apply grammar check (OpenAI with fallback) to the spell-checked text
+        # STEP 2: Apply grammar check (Stage 2: OpenAI with fallback) to the spell-checked text
         after_grammar_check, grammar_history, openai_status = grammar_check_stage(tool, after_spell_check)
 
         final_corrected = after_grammar_check
-        all_history = spell_history + grammar_history
 
-        # Build clean, accurate edits mapping original input to final corrected output
-        old, new = re.findall(r"\s+|\S+", original), re.findall(r"\s+|\S+", final_corrected)
+        # Build clean, accurate edits mapping original input to final corrected output with exact character offsets
+        old = re.findall(r"\s+|\S+", original)
+        new = re.findall(r"\s+|\S+", final_corrected)
+
+        token_offsets = []
+        curr = 0
+        for tok in old:
+            token_offsets.append((curr, curr + len(tok)))
+            curr += len(tok)
+
         edits = []
         for tag, i, j, a, b in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
             if tag == "equal":
                 continue
-            before, after = "".join(old[i:j]), "".join(new[a:b])
+            
+            start_char = token_offsets[i][0] if i < len(token_offsets) else len(original)
+            end_char = token_offsets[j - 1][1] if 0 <= j - 1 < len(token_offsets) else start_char
+            before = original[start_char:end_char]
+            after = "".join(new[a:b])
+
             if is_abbreviation(after, before):
                 continue
 
-            # Determine whether this change was introduced by the spell check or grammar check stage
+            # Determine whether this change was introduced by Stage 1 (Spelling) or Stage 2 (Grammar)
+            stage = 2
             issue_type = "Grammar"
-            issue_message = "Review this suggested change."
-            for orig_tok, repl_tok, h_type, h_msg in all_history:
-                if orig_tok in before:
-                    issue_type = h_type
+            issue_message = "Grammar correction"
+
+            # Check if this token was modified during spell check
+            for orig_tok, repl_tok, h_type, h_msg in spell_history:
+                if orig_tok.lower() == before.lower().strip() or orig_tok in before:
+                    stage = 1
+                    issue_type = "Spelling"
                     issue_message = h_msg
                     break
 
+            if stage == 2:
+                for orig_tok, repl_tok, h_type, h_msg in grammar_history:
+                    if orig_tok.lower() == before.lower().strip() or orig_tok in before:
+                        issue_type = "Grammar"
+                        issue_message = h_msg
+                        break
+
             edits.append({
                 "type": issue_type,
+                "stage": stage,
+                "stage_label": f"Stage {stage} ({issue_type})",
                 "original": before,
                 "replacement": after,
+                "startIndex": start_char,
+                "endIndex": end_char,
                 "message": issue_message
             })
 
@@ -553,11 +574,13 @@ def correct_text(text):
             if getattr(m, "rule_issue_type", "") != "misspelling"
         ]
 
+        engine_name = "OpenAI (gpt-4o-mini)" if "Active" in openai_status else "Enhanced Clinical Grammar + LanguageTool"
+
         return {
             "original": original,
             "corrected": final_corrected,
             "spell_checked": after_spell_check,
-            "grammar_engine": "OpenAI (gpt-4o-mini)" if "active" in openai_status else "Enhanced Clinical Grammar + LanguageTool",
+            "grammar_engine": engine_name,
             "openai_status": openai_status,
             "edits": edits,
             "grammar": {
@@ -565,7 +588,6 @@ def correct_text(text):
                 "issues": remaining_grammar_issues
             }
         }
-
 
 
 def error_message(error):

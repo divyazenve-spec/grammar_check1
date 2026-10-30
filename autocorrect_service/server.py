@@ -63,7 +63,10 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response(400, {"error": str(error) if not isinstance(error, json.JSONDecodeError) else "Invalid JSON request."})
             return
         try:
-            self.json_response(200, correct_text(text))
+            logging.info('RECEIVED TEXT: %r', text)
+            result = correct_text(text)
+            logging.info('CORRECT RESULT: %r', result)
+            self.json_response(200, result)
         except ValueError as error:
             self.json_response(400, {"error": str(error)})
         except Exception as error:
