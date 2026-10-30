@@ -58,17 +58,21 @@ def is_abbreviation(candidate, original):
     """
     if not candidate:
         return True
+    clean_cand = candidate.rstrip('.,!?;:')
+    clean_orig = original.rstrip('.,!?;:')
+    if not clean_cand:
+        return False
     # Disallow all-uppercase acronyms (e.g. DG, SG, PR, MD, TV, USA) unless user originally typed uppercase
-    if not original.isupper() and candidate.isupper() and len(candidate) >= 2:
+    if not clean_orig.isupper() and clean_cand.isupper() and len(clean_cand) >= 2:
         return True
-    # Disallow dot abbreviations (e.g. Dr., etc., vs.)
-    if '.' in candidate:
+    # Disallow internal dot abbreviations (e.g. e.g., i.e., vs.)
+    if '.' in clean_cand:
         return True
     # Disallow known abbreviations and unit codes
-    if candidate.lower() in KNOWN_ABBREVIATIONS:
+    if clean_cand.lower() in KNOWN_ABBREVIATIONS:
         return True
     # In English, real spelled-out words with length > 1 must contain at least one vowel
-    if len(candidate) > 1 and not any(ch in 'aeiouyAEIOUY' for ch in candidate):
+    if len(clean_cand) > 1 and not any(ch in 'aeiouyAEIOUY' for ch in clean_cand):
         return True
     return False
 
@@ -212,7 +216,12 @@ def enhance_clinical_grammar(text):
     corrected = text
     grammar_changes = []
 
-    # 1. 'is have' / 'was have' -> 'has' / 'had'
+    # Irregular past tense without auxiliary (e.g. 'cat drunk' -> 'cat drank')
+    for m in re.finditer(r'\b(?<!has\s)(?<!had\s)(?<!have\s)(?<!is\s)(?<!was\s)\b([a-zA-Z]+)\s+drunk\b', corrected, flags=re.IGNORECASE):
+        grammar_changes.append(('drunk', 'drank', 'Grammar', "Verb form: use past tense 'drank' rather than participle 'drunk'."))
+    corrected = re.sub(r'\b(?<!has\s)(?<!had\s)(?<!have\s)(?<!is\s)(?<!was\s)\b([a-zA-Z]+)\s+drunk\b', r'\1 drank', corrected, flags=re.IGNORECASE)
+
+    # 1. 'is have' / 'was have' -> 'has' / 'had' 
     for m in re.finditer(r'\b(is|was)\s+have\b', corrected, flags=re.IGNORECASE):
         repl = 'has' if m.group(1).lower() == 'is' else 'had'
         grammar_changes.append((m.group(0), repl, 'Grammar', f"Auxiliary verb correction: '{m.group(0)}' -> '{repl}'."))
@@ -348,42 +357,25 @@ def grammar_check_stage(tool, text):
     """
     STAGE 2: Grammar Check.
     Applied to the text AFTER spelling has been checked and corrected.
-    Powered by Enhanced Clinical Grammar Rules + LanguageTool.
+    Uses language_tool_python engine: tool = language_tool_python.LanguageTool('en-US')
+    and tool.correct(text) to automatically fix errors cleanly.
     """
     enhanced_text, enhanced_changes = enhance_clinical_grammar(text)
-    corrected, seen, history = enhanced_text, {enhanced_text}, list(enhanced_changes)
 
-    for _ in range(6):
-        matches = sorted(tool.check(corrected), key=lambda match: match.offset)
-        grammar_matches = [
-            m for m in matches 
-            if getattr(m, 'rule_issue_type', '') != 'misspelling' and m.replacements
-        ]
-        if not grammar_matches:
-            break
+    # Automatically fixes errors cleanly using LanguageTool tool.correct
+    corrected_text = tool.correct(enhanced_text)
 
-        # Apply all non-overlapping matches from left to right
-        parts, cursor, changes = [], 0, []
-        for match in sorted(grammar_matches, key=lambda item: item.offset):
-            start, end = match.offset, match.offset + match.error_length
-            if start < cursor or not 0 <= start <= end <= len(corrected):
-                continue
-            before = corrected[start:end]
-            replacement = match.replacements[0]
-            if replacement == before:
-                continue
-            parts.extend((corrected[cursor:start], replacement))
-            cursor = end
-            changes.append((before, replacement, 'Grammar', match.message or 'Grammar correction'))
-        parts.append(corrected[cursor:])
-        updated = "".join(parts)
-        if updated in seen:
-            break
-        seen.add(updated)
-        corrected = updated
-        history.extend(changes)
+    # Capture changes history for UI inspection
+    history = list(enhanced_changes)
+    try:
+        matches = tool.check(text)
+        for m in matches:
+            if getattr(m, 'rule_issue_type', '') != 'misspelling' and m.replacements:
+                history.append((text[m.offset:m.offset+m.error_length], m.replacements[0], 'Grammar', m.message))
+    except Exception:
+        pass
 
-    return corrected, history
+    return corrected_text, history
 
 
 def correct_text(text):
