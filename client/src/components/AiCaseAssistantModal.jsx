@@ -40,11 +40,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
     debounceTimerRef.current = setTimeout(async () => {
       try {
         const res = await api.ai.correctText(symptoms);
-        const hasSuggestions = res && (
-          (res.suggestions && res.suggestions.length > 0) ||
-          (res.edits && res.edits.length > 0)
-        );
-        if (hasSuggestions && res.corrected && res.corrected.trim() !== trimmed) {
+        if (res && res.corrected && res.corrected.trim() !== trimmed && res.edits && res.edits.length > 0) {
           setCorrectionResult(res);
         } else {
           setCorrectionResult(null);
@@ -54,7 +50,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
       } finally {
         setIsChecking(false);
       }
-    }, 500);
+    }, 650);
 
     return () => {
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
@@ -128,11 +124,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
 
     try {
       const nextRes = await api.ai.correctText(updated);
-      const hasNext = nextRes && (
-        (nextRes.suggestions && nextRes.suggestions.length > 0) ||
-        (nextRes.edits && nextRes.edits.length > 0)
-      );
-      if (hasNext && nextRes.corrected && nextRes.corrected.trim() !== updated.trim()) {
+      if (nextRes && nextRes.corrected && nextRes.corrected.trim() !== updated.trim() && nextRes.edits && nextRes.edits.length > 0) {
         setCorrectionResult(nextRes);
       } else {
         setCorrectionResult(null);
@@ -143,28 +135,6 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
       console.warn('Post-replacement autocorrection error:', err);
     } finally {
       setIsChecking(false);
-    }
-  };
-
-  // Ignore a single suggestion without changing text
-  const handleIgnoreSingle = (item) => {
-    if (!correctionResult) return;
-    const remainingSuggestions = (correctionResult.suggestions || []).filter(
-      (s) => s.id !== item.id && s.original !== item.original
-    );
-    const remainingEdits = (correctionResult.edits || []).filter(
-      (e) => (e.id && e.id !== item.id) || (e.original !== item.original || e.replacement !== item.replacement)
-    );
-
-    if (remainingSuggestions.length === 0 && remainingEdits.length === 0) {
-      setCorrectionResult(null);
-    } else {
-      setCorrectionResult(prev => ({
-        ...prev,
-        suggestions: remainingSuggestions,
-        edits: remainingEdits,
-        issue_count: remainingSuggestions.length
-      }));
     }
   };
 
@@ -262,7 +232,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                 </div>
               </div>
 
-              {/* Chief Complaint Box with Integrated TextChecker Grammar & Spell Check */}
+              {/* Chief Complaint Box with Integrated LanguageTool Autocorrection */}
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                   <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#121A15', margin: 0 }}>
@@ -270,82 +240,27 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                   </label>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {/* TextChecker Real-Time Status Pill */}
-                    {isChecking ? (
+                    {/* Active Status Badge */}
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      background: '#F0FDF4',
+                      border: '1px solid #BBF7D0',
+                      borderRadius: '12px',
+                      padding: '2px 8px',
+                      fontSize: '11px',
+                      color: '#166534',
+                      fontWeight: '600'
+                    }}>
                       <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        background: '#EFF6FF',
-                        border: '1px solid #BFDBFE',
-                        borderRadius: '20px',
-                        padding: '3px 10px',
-                        fontSize: '11px',
-                        color: '#1D4ED8',
-                        fontWeight: '600'
-                      }}>
-                        <Loader2 size={12} className="animate-spin" />
-                        <span>Checking...</span>
-                      </div>
-                    ) : (correctionResult && ((correctionResult.suggestions && correctionResult.suggestions.length > 0) || (correctionResult.edits && correctionResult.edits.length > 0))) ? (
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        background: '#FEF2F2',
-                        border: '1px solid #FCA5A5',
-                        borderRadius: '20px',
-                        padding: '3px 10px',
-                        fontSize: '11px',
-                        color: '#991B1B',
-                        fontWeight: '600'
-                      }}>
-                        <AlertCircle size={12} color="#DC2626" />
-                        <span style={{
-                          background: '#EF4444',
-                          color: '#FFFFFF',
-                          borderRadius: '10px',
-                          padding: '0 5px',
-                          fontSize: '10px',
-                          fontWeight: '700'
-                        }}>
-                          {(correctionResult.suggestions || correctionResult.edits).length}
-                        </span>
-                        <span>{(correctionResult.suggestions || correctionResult.edits).length === 1 ? 'issue found' : 'issues found'}</span>
-                      </div>
-                    ) : symptoms.trim().length >= 3 ? (
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '5px',
-                        background: '#F0FDF4',
-                        border: '1px solid #86EFAC',
-                        borderRadius: '20px',
-                        padding: '3px 10px',
-                        fontSize: '11px',
-                        color: '#166534',
-                        fontWeight: '600'
-                      }}>
-                        <CheckCircle2 size={12} color="#16A34A" />
-                        <span>All clear</span>
-                      </div>
-                    ) : (
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '5px',
-                        background: '#F8FAFC',
-                        border: '1px solid #E2E8F0',
-                        borderRadius: '20px',
-                        padding: '3px 10px',
-                        fontSize: '11px',
-                        color: '#64748B',
-                        fontWeight: '600'
-                      }}>
-                        <Sparkles size={12} color="#64748B" />
-                        <span>Grammar Assistant</span>
-                      </div>
-                    )}
+                        width: '6px',
+                        height: '6px',
+                        borderRadius: '50%',
+                        background: isChecking ? '#F59E0B' : '#10B981'
+                      }} />
+                      <span>{isChecking ? 'Checking...' : 'LanguageTool Active'}</span>
+                    </div>
 
                     {/* Manual Check Button */}
                     <button
@@ -380,7 +295,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                     style={{ 
                       width: '100%', 
                       resize: 'vertical',
-                      borderColor: (correctionResult && ((correctionResult.suggestions && correctionResult.suggestions.length > 0) || (correctionResult.edits && correctionResult.edits.length > 0))) ? '#F59E0B' : undefined,
+                      borderColor: (correctionResult && correctionResult.edits && correctionResult.edits.length > 0) ? '#F59E0B' : undefined,
                       transition: 'border-color 0.2s ease'
                     }}
                     placeholder="e.g. 5-year-old German Shepherd, acute abdominal distension, unproductive retching for 3 hours, restlessness, hypersalivation..."
@@ -437,191 +352,122 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                   </div>
                 )}
 
-                {/* TextChecker Suggestion Panel */}
-                {correctionResult && (
-                  ((correctionResult.suggestions && correctionResult.suggestions.length > 0) ||
-                   (correctionResult.edits && correctionResult.edits.length > 0))
-                ) && (
+                {/* Suggestions Card */}
+                {correctionResult && correctionResult.edits && correctionResult.edits.length > 0 && (
                   <div style={{
                     marginTop: '8px',
                     padding: '12px',
-                    background: '#FFFFFF',
-                    border: '1px solid #E2E8F0',
-                    borderRadius: '10px',
-                    boxShadow: '0 4px 14px rgba(0, 0, 0, 0.05)',
+                    background: '#FFFBEB',
+                    border: '1px solid #FDE68A',
+                    borderRadius: '8px',
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '10px'
                   }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <Sparkles size={16} color="#0D472B" />
-                        <span style={{ fontSize: '13px', fontWeight: '700', color: '#0F172A' }}>
-                          Grammar & Spelling Assistant
-                        </span>
-                        <span style={{
-                          background: '#EF4444',
-                          color: '#FFFFFF',
-                          fontSize: '10.5px',
-                          fontWeight: '700',
-                          padding: '1px 7px',
-                          borderRadius: '10px'
-                        }}>
-                          {(correctionResult.suggestions || correctionResult.edits).length} {(correctionResult.suggestions || correctionResult.edits).length === 1 ? 'issue' : 'issues'}
+                        <SpellCheck size={15} color="#D97706" />
+                        <span style={{ fontSize: '12.5px', fontWeight: '700', color: '#92400E' }}>
+                          Grammar & Spelling Suggestions ({correctionResult.edits.length} {correctionResult.edits.length === 1 ? 'suggestion' : 'suggestions'})
                         </span>
                       </div>
 
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <button
-                          type="button"
-                          onClick={handleAcceptAll}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '5px',
-                            background: '#0D472B',
-                            color: '#FFFFFF',
-                            border: 'none',
-                            borderRadius: '6px',
-                            padding: '5px 12px',
-                            fontSize: '12px',
-                            fontWeight: '600',
-                            cursor: 'pointer'
-                          }}
-                        >
-                          <Check size={13} />
-                          <span>Accept All</span>
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAcceptAll}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          background: '#0D472B',
+                          color: '#FFFFFF',
+                          border: 'none',
+                          borderRadius: '5px',
+                          padding: '4px 10px',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <Check size={13} />
+                        <span>Accept All Corrections</span>
+                      </button>
                     </div>
 
                     {/* Proposed text preview */}
                     {correctionResult.corrected && correctionResult.corrected !== symptoms && (
                       <div style={{
-                        background: '#F8FAFC',
-                        border: '1px solid #CBD5E1',
+                        background: '#FFFFFF',
+                        border: '1px solid #FCD34D',
                         borderRadius: '6px',
-                        padding: '8px 12px',
+                        padding: '8px 10px',
                         fontSize: '12.5px',
                         color: '#1E293B',
                         lineHeight: '1.4'
                       }}>
-                        <span style={{ fontWeight: '700', color: '#0D472B', marginRight: '6px' }}>Proposed Text:</span>
+                        <span style={{ fontWeight: '600', color: '#0D472B', marginRight: '6px' }}>Proposed:</span>
                         <span>{correctionResult.corrected}</span>
                       </div>
                     )}
 
-                    {/* Individual TextChecker Suggestion Cards */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                      {(correctionResult.suggestions || correctionResult.edits).map((item, idx) => {
-                        const sType = (item.type || 'grammar').toLowerCase();
-                        const isSpelling = sType === 'spelling';
-                        const isPunctuation = sType === 'punctuation';
-                        const isStyle = sType === 'style';
+                    {/* Individual Diff Chips */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                      {correctionResult.edits.map((edit, idx) => (
+                        <div
+                          key={idx}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            background: '#FFFFFF',
+                            border: '1px solid #E2E8F0',
+                            borderRadius: '6px',
+                            padding: '4px 8px',
+                            fontSize: '12px'
+                          }}
+                        >
+                          <span style={{
+                            fontSize: '10px',
+                            fontWeight: '700',
+                            padding: '1px 5px',
+                            borderRadius: '4px',
+                            background: edit.type === 'Spelling' ? '#FEE2E2' : '#E0E7FF',
+                            color: edit.type === 'Spelling' ? '#991B1B' : '#3730A3'
+                          }}>
+                            {edit.type}
+                          </span>
 
-                        // TextChecker color mapping
-                        const badgeBg = isSpelling ? '#FEE2E2' : isPunctuation ? '#FEF3C7' : isStyle ? '#F3E8FF' : '#EFF6FF';
-                        const badgeColor = isSpelling ? '#DC2626' : isPunctuation ? '#D97706' : isStyle ? '#7C3AED' : '#2563EB';
-                        const label = isSpelling ? 'Spelling' : isPunctuation ? 'Punctuation' : isStyle ? 'Style' : 'Grammar';
+                          <span style={{
+                            textDecoration: 'line-through',
+                            color: '#EF4444',
+                            fontWeight: '600'
+                          }}>
+                            {edit.original}
+                          </span>
+                          <span style={{ color: '#94A3B8' }}>&rarr;</span>
 
-                        return (
-                          <div
-                            key={item.id || idx}
+                          <button
+                            type="button"
+                            onClick={() => handleAcceptSingle(edit)}
                             style={{
+                              background: '#E8F3ED',
+                              border: '1px solid #0D472B',
+                              borderRadius: '4px',
+                              padding: '2px 6px',
+                              color: '#0D472B',
+                              fontWeight: '700',
+                              cursor: 'pointer',
                               display: 'flex',
                               alignItems: 'center',
-                              justifyContent: 'space-between',
-                              background: '#F8FAFC',
-                              border: '1px solid #E2E8F0',
-                              borderRadius: '8px',
-                              padding: '8px 10px',
-                              fontSize: '12px',
-                              gap: '10px'
+                              gap: '2px'
                             }}
+                            title={edit.message || 'Apply suggested change'}
                           >
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', flex: 1 }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <span style={{
-                                  fontSize: '10px',
-                                  fontWeight: '700',
-                                  padding: '1px 6px',
-                                  borderRadius: '4px',
-                                  background: badgeBg,
-                                  color: badgeColor,
-                                  textTransform: 'uppercase',
-                                  letterSpacing: '0.4px'
-                                }}>
-                                  {label}
-                                </span>
-
-                                <span style={{
-                                  textDecoration: 'line-through',
-                                  color: '#EF4444',
-                                  fontWeight: '600'
-                                }}>
-                                  {item.original}
-                                </span>
-                                <span style={{ color: '#94A3B8' }}>&rarr;</span>
-                                <span style={{
-                                  color: '#166534',
-                                  fontWeight: '700',
-                                  background: '#DCFCE7',
-                                  padding: '1px 6px',
-                                  borderRadius: '4px'
-                                }}>
-                                  {item.replacement}
-                                </span>
-                              </div>
-
-                              <div style={{ fontSize: '11px', color: '#64748B' }}>
-                                {item.explanation || item.message || 'Suggested correction.'}
-                              </div>
-                            </div>
-
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <button
-                                type="button"
-                                onClick={() => handleAcceptSingle(item)}
-                                style={{
-                                  background: '#0D472B',
-                                  border: 'none',
-                                  borderRadius: '4px',
-                                  padding: '4px 8px',
-                                  color: '#FFFFFF',
-                                  fontWeight: '600',
-                                  fontSize: '11.5px',
-                                  cursor: 'pointer',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '3px'
-                                }}
-                                title="Apply this suggestion"
-                              >
-                                <span>Apply</span>
-                                <Check size={11} />
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => handleIgnoreSingle(item)}
-                                style={{
-                                  background: 'transparent',
-                                  border: '1px solid #CBD5E1',
-                                  borderRadius: '4px',
-                                  padding: '4px 8px',
-                                  color: '#64748B',
-                                  fontWeight: '600',
-                                  fontSize: '11.5px',
-                                  cursor: 'pointer'
-                                }}
-                                title="Ignore this suggestion"
-                              >
-                                Ignore
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
+                            <span>{edit.replacement}</span>
+                            <Check size={11} />
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}

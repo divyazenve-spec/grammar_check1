@@ -416,7 +416,6 @@ def correct_text(text):
         # Build clean, accurate edits mapping original input to final corrected output
         old, new = re.findall(r"\s+|\S+", original), re.findall(r"\s+|\S+", final_corrected)
         edits = []
-        suggestions = []
         for tag, i, j, a, b in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
             if tag == "equal":
                 continue
@@ -428,33 +427,16 @@ def correct_text(text):
             issue_type = "Grammar"
             issue_message = "Review this suggested change."
             for orig_tok, repl_tok, h_type, h_msg in all_history:
-                if orig_tok.lower() in before.lower():
+                if orig_tok in before:
                     issue_type = h_type
                     issue_message = h_msg
                     break
-
-            # Find character position for TextChecker highlights
-            start_pos = original.find(before)
-            end_pos = (start_pos + len(before)) if start_pos != -1 else -1
-
-            sugg_item = {
-                "id": f"sugg-{len(suggestions) + 1}",
-                "original": before,
-                "replacement": after,
-                "explanation": issue_message,
-                "type": issue_type.lower(),
-                "startIndex": start_pos,
-                "endIndex": end_pos
-            }
-            suggestions.append(sugg_item)
 
             edits.append({
                 "type": issue_type,
                 "original": before,
                 "replacement": after,
-                "message": issue_message,
-                "id": sugg_item["id"],
-                "explanation": issue_message
+                "message": issue_message
             })
 
         # Detailed grammar inspection of the final output
@@ -473,11 +455,7 @@ def correct_text(text):
             "original": original,
             "corrected": final_corrected,
             "spell_checked": after_spell_check,
-            "suggestions": suggestions,
             "edits": edits,
-            "issue_count": len(suggestions),
-            "language": "en",
-            "timestamp": int(os.environ.get("TIMESTAMP", 0)) or 1730000000,
             "grammar": {
                 "issue_count": len(remaining_grammar_issues),
                 "issues": remaining_grammar_issues
