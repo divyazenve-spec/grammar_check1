@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
-import { X, Sparkles, AlertCircle, FileText, CheckCircle2, Loader2, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  X, Sparkles, AlertCircle, FileText, CheckCircle2, Loader2, ArrowRight,
+  Wand2, RotateCcw, Check, CheckCheck, BookOpen, SpellCheck
+} from 'lucide-react';
 import { api } from '../services/api';
 
 export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
@@ -9,7 +12,154 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState(null);
 
+  // LanguageTool Autocorrection & Grammar Check State
+  const [isChecking, setIsChecking] = useState(false);
+  const [correctionResult, setCorrectionResult] = useState(null);
+  const [originalSymptomsBeforeFix, setOriginalSymptomsBeforeFix] = useState(null);
+  const [successNotice, setSuccessNotice] = useState(false);
+
+  const debounceTimerRef = useRef(null);
+
+  // Real-time debounced grammar and spelling correction
+  useEffect(() => {
+    if (!isOpen) return;
+    const trimmed = symptoms.trim();
+
+    if (trimmed.length < 3) {
+      setCorrectionResult(null);
+      setIsChecking(false);
+      return;
+    }
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    setIsChecking(true);
+
+    debounceTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await api.ai.correctText(symptoms);
+        if (res && res.corrected && res.corrected.trim() !== trimmed && res.edits && res.edits.length > 0) {
+          setCorrectionResult(res);
+        } else {
+          setCorrectionResult(null);
+        }
+      } catch (err) {
+        console.warn('Grammar check debounce error:', err);
+      } finally {
+        setIsChecking(false);
+      }
+    }, 650);
+
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, [symptoms, isOpen]);
+
   if (!isOpen) return null;
+
+  // Manual Trigger for LanguageTool Correction
+  const handleManualCheck = async () => {
+    if (!symptoms.trim()) {
+      alert('Please enter text into the Chief Complaint box first.');
+      return;
+    }
+
+    setIsChecking(true);
+    setOriginalSymptomsBeforeFix(symptoms);
+
+    try {
+      const res = await api.ai.correctText(symptoms);
+      if (res && res.edits && res.edits.length > 0) {
+        setCorrectionResult(res);
+      } else {
+        alert('No grammar or spelling errors detected by LanguageTool!');
+        setCorrectionResult(null);
+      }
+    } catch (err) {
+      console.warn('Manual correction failed:', err);
+      alert('LanguageTool server is loading. Please try again in a few moments.');
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  // Accept all suggestions at once and run secondary autocorrection on the resulting output
+  const handleAcceptAll = async () => {
+    if (!correctionResult || !correctionResult.corrected) return;
+    const firstCorrectedOutput = correctionResult.corrected;
+    setOriginalSymptomsBeforeFix(symptoms);
+    setSymptoms(firstCorrectedOutput);
+    setIsChecking(true);
+    setCorrectionResult(null);
+
+    // After autocorrecting the user input in complaint box, again the output
+    // undergoes autocorrection for grammatical and spelling errors
+    try {
+      const secondPassRes = await api.ai.correctText(firstCorrectedOutput);
+      if (secondPassRes && secondPassRes.corrected && secondPassRes.corrected.trim() !== firstCorrectedOutput.trim() && secondPassRes.edits && secondPassRes.edits.length > 0) {
+        setCorrectionResult(secondPassRes);
+      } else {
+        setCorrectionResult(null);
+        setSuccessNotice(true);
+        setTimeout(() => setSuccessNotice(false), 4000);
+      }
+    } catch (err) {
+      console.warn('Second pass autocorrection error:', err);
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  // Accept a single edit suggestion and re-run autocorrection on the updated text
+  const handleAcceptSingle = async (edit) => {
+    if (!edit || edit.original === undefined || edit.replacement === undefined) return;
+    setOriginalSymptomsBeforeFix(symptoms);
+
+    let updated = symptoms;
+    // Prefer exact character position replacement if index coordinates match
+    if (typeof edit.startIndex === 'number' && typeof edit.endIndex === 'number' &&
+        symptoms.substring(edit.startIndex, edit.endIndex) === edit.original) {
+      updated = symptoms.substring(0, edit.startIndex) + edit.replacement + symptoms.substring(edit.endIndex);
+    } else {
+      // Safe whole-word boundary replacement to avoid replacing letters inside other words
+      const escaped = edit.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const wordRegex = new RegExp('\\b' + escaped + '\\b');
+      if (wordRegex.test(updated)) {
+        updated = updated.replace(wordRegex, edit.replacement);
+      } else {
+        updated = updated.replace(edit.original, edit.replacement);
+      }
+    }
+
+    setSymptoms(updated);
+    setIsChecking(true);
+
+    try {
+      const nextRes = await api.ai.correctText(updated);
+      if (nextRes && nextRes.corrected && nextRes.corrected.trim() !== updated.trim() && nextRes.edits && nextRes.edits.length > 0) {
+        setCorrectionResult(nextRes);
+      } else {
+        setCorrectionResult(null);
+        setSuccessNotice(true);
+        setTimeout(() => setSuccessNotice(false), 4000);
+      }
+    } catch (err) {
+      console.warn('Post-replacement autocorrection error:', err);
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  // Undo and revert to original input
+  const handleUndo = () => {
+    if (originalSymptomsBeforeFix !== null) {
+      setSymptoms(originalSymptomsBeforeFix);
+      setOriginalSymptomsBeforeFix(null);
+      setCorrectionResult(null);
+    }
+  };
 
   const handleAnalyze = async () => {
     if (!symptoms.trim()) {
@@ -96,18 +246,269 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                 </div>
               </div>
 
+              {/* Chief Complaint Box with Integrated LanguageTool Autocorrection */}
               <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', marginBottom: '6px', color: '#121A15' }}>
-                  Chief Complaint & Clinical Signs *
-                </label>
-                <textarea
-                  rows="3"
-                  className="custom-filter-select"
-                  style={{ width: '100%', resize: 'vertical' }}
-                  placeholder="e.g. 5-year-old German Shepherd, acute abdominal distension, unproductive retching for 3 hours, restlessness, hypersalivation..."
-                  value={symptoms}
-                  onChange={(e) => setSymptoms(e.target.value)}
-                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#121A15', margin: 0 }}>
+                    Chief Complaint & Clinical Signs *
+                  </label>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {/* Active Status Badge */}
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      background: '#F0FDF4',
+                      border: '1px solid #BBF7D0',
+                      borderRadius: '12px',
+                      padding: '2px 8px',
+                      fontSize: '11px',
+                      color: '#166534',
+                      fontWeight: '600'
+                    }}>
+                      <div style={{
+                        width: '6px',
+                        height: '6px',
+                        borderRadius: '50%',
+                        background: isChecking ? '#F59E0B' : '#10B981'
+                      }} />
+                      <span>
+                        {isChecking 
+                          ? 'Checking...' 
+                          : (correctionResult?.grammar_engine 
+                              ? (correctionResult.grammar_engine.includes('OpenAI') ? 'OpenAI AI Active' : 'Spelling & Grammar Active')
+                              : 'Spelling & Grammar Active')}
+                      </span>
+                    </div>
+
+                    {/* Manual Check Button */}
+                    <button
+                      type="button"
+                      onClick={handleManualCheck}
+                      disabled={isChecking}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        fontSize: '11.5px',
+                        color: '#0D472B',
+                        fontWeight: '600',
+                        padding: '2px 6px',
+                        borderRadius: '4px'
+                      }}
+                      title="Run manual Grammar & Spell Check"
+                    >
+                      <Wand2 size={13} />
+                      <span>Check Details</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ position: 'relative' }}>
+                  <textarea
+                    rows="3"
+                    className="custom-filter-select"
+                    style={{ 
+                      width: '100%', 
+                      resize: 'vertical',
+                      borderColor: (correctionResult && correctionResult.edits && correctionResult.edits.length > 0) ? '#F59E0B' : undefined,
+                      transition: 'border-color 0.2s ease'
+                    }}
+                    placeholder="e.g. 5-year-old German Shepherd, acute abdominal distension, unproductive retching for 3 hours, restlessness, hypersalivation..."
+                    value={symptoms}
+                    onChange={(e) => setSymptoms(e.target.value)}
+                  />
+
+                  {/* Undo Button */}
+                  {originalSymptomsBeforeFix !== null && (
+                    <button
+                      type="button"
+                      onClick={handleUndo}
+                      style={{
+                        position: 'absolute',
+                        right: '8px',
+                        bottom: '12px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        background: '#FFFFFF',
+                        border: '1px solid #CBD5E1',
+                        borderRadius: '4px',
+                        padding: '3px 8px',
+                        fontSize: '11px',
+                        color: '#475569',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                      }}
+                      title="Revert to original text before corrections"
+                    >
+                      <RotateCcw size={12} />
+                      <span>Undo</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Success Banner */}
+                {successNotice && (
+                  <div style={{
+                    marginTop: '6px',
+                    padding: '6px 10px',
+                    background: '#ECFDF5',
+                    border: '1px solid #A7F3D0',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    color: '#065F46',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}>
+                    <CheckCheck size={14} color="#059669" />
+                    <span>All grammar and spelling corrections applied!</span>
+                  </div>
+                )}
+
+                {/* Suggestions Card */}
+                {correctionResult && correctionResult.edits && correctionResult.edits.length > 0 && (
+                  <div style={{
+                    marginTop: '8px',
+                    padding: '12px',
+                    background: '#FFFBEB',
+                    border: '1px solid #FDE68A',
+                    borderRadius: '8px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <SpellCheck size={15} color="#D97706" />
+                        <span style={{ fontSize: '12.5px', fontWeight: '700', color: '#92400E' }}>
+                          Grammar & Spelling Suggestions ({correctionResult.edits.length} {correctionResult.edits.length === 1 ? 'suggestion' : 'suggestions'})
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleAcceptAll}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          background: '#0D472B',
+                          color: '#FFFFFF',
+                          border: 'none',
+                          borderRadius: '5px',
+                          padding: '4px 10px',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <Check size={13} />
+                        <span>Accept All Corrections</span>
+                      </button>
+                    </div>
+
+                    {/* OpenAI Quota notice if applicable */}
+                    {correctionResult?.openai_status && correctionResult.openai_status.includes('Quota Exhausted') && (
+                      <div style={{
+                        background: '#FEF3C7',
+                        border: '1px solid #FCD34D',
+                        borderRadius: '6px',
+                        padding: '6px 10px',
+                        fontSize: '11px',
+                        color: '#92400E',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}>
+                        <AlertCircle size={13} color="#D97706" />
+                        <span>OpenAI API Key: quota exhausted on OpenAI billing. Stage 2 is actively handled by the Enhanced Clinical Grammar Engine.</span>
+                      </div>
+                    )}
+
+                    {/* Proposed text preview */}
+                    {correctionResult.corrected && correctionResult.corrected !== symptoms && (
+                      <div style={{
+                        background: '#FFFFFF',
+                        border: '1px solid #FCD34D',
+                        borderRadius: '6px',
+                        padding: '8px 10px',
+                        fontSize: '12.5px',
+                        color: '#1E293B',
+                        lineHeight: '1.4'
+                      }}>
+                        <span style={{ fontWeight: '600', color: '#0D472B', marginRight: '6px' }}>Proposed:</span>
+                        <span>{correctionResult.corrected}</span>
+                      </div>
+                    )}
+
+                    {/* Individual Diff Chips */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                      {correctionResult.edits.map((edit, idx) => (
+                        <div
+                          key={idx}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            background: '#FFFFFF',
+                            border: '1px solid #E2E8F0',
+                            borderRadius: '6px',
+                            padding: '4px 8px',
+                            fontSize: '12px'
+                          }}
+                        >
+                          <span style={{
+                            fontSize: '10px',
+                            fontWeight: '700',
+                            padding: '1px 5px',
+                            borderRadius: '4px',
+                            background: edit.stage === 1 || edit.type === 'Spelling' ? '#FEE2E2' : '#E0E7FF',
+                            color: edit.stage === 1 || edit.type === 'Spelling' ? '#991B1B' : '#3730A3'
+                          }}>
+                            {edit.stage_label || (edit.stage === 1 || edit.type === 'Spelling' ? 'Stage 1: Spelling' : 'Stage 2: Grammar')}
+                          </span>
+
+                          <span style={{
+                            textDecoration: 'line-through',
+                            color: '#EF4444',
+                            fontWeight: '600'
+                          }}>
+                            {edit.original}
+                          </span>
+                          <span style={{ color: '#94A3B8' }}>&rarr;</span>
+
+                          <button
+                            type="button"
+                            onClick={() => handleAcceptSingle(edit)}
+                            style={{
+                              background: '#E8F3ED',
+                              border: '1px solid #0D472B',
+                              borderRadius: '4px',
+                              padding: '2px 6px',
+                              color: '#0D472B',
+                              fontWeight: '700',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '2px'
+                            }}
+                            title={edit.message || 'Apply suggested change'}
+                          >
+                            <span>{edit.replacement}</span>
+                            <Check size={11} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>
