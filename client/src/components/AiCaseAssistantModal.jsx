@@ -273,13 +273,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                         borderRadius: '50%',
                         background: isChecking ? '#F59E0B' : '#10B981'
                       }} />
-                      <span>
-                        {isChecking 
-                          ? 'Checking...' 
-                          : (correctionResult?.grammar_engine 
-                              ? (correctionResult.grammar_engine.includes('OpenAI') ? 'OpenAI AI Active' : 'Spelling & Grammar Active')
-                              : 'Spelling & Grammar Active')}
-                      </span>
+                      <span>{isChecking ? 'Checking...' : 'Spelling & Grammar Active'}</span>
                     </div>
 
                     {/* Manual Check Button */}
@@ -413,24 +407,6 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                         <span>Accept All Corrections</span>
                       </button>
                     </div>
-
-                    {/* OpenAI Quota notice if applicable */}
-                    {correctionResult?.openai_status && correctionResult.openai_status.includes('Quota Exhausted') && (
-                      <div style={{
-                        background: '#FEF3C7',
-                        border: '1px solid #FCD34D',
-                        borderRadius: '6px',
-                        padding: '6px 10px',
-                        fontSize: '11px',
-                        color: '#92400E',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px'
-                      }}>
-                        <AlertCircle size={13} color="#D97706" />
-                        <span>OpenAI API Key: quota exhausted on OpenAI billing. Stage 2 is actively handled by the Enhanced Clinical Grammar Engine.</span>
-                      </div>
-                    )}
 
                     {/* Proposed text preview */}
                     {correctionResult.corrected && correctionResult.corrected !== symptoms && (

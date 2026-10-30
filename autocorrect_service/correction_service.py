@@ -2,13 +2,10 @@
 
 import atexit
 import difflib
-import json
 import logging
 import os
 import re
 import threading
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -347,107 +344,17 @@ def enhance_clinical_grammar(text):
     return corrected, grammar_changes
 
 
-DEFAULT_OPENAI_API_KEY = ""
-
-
-def get_openai_api_key():
-    """Retrieves OpenAI API key from environment, .env file, or configured default."""
-    key = os.environ.get("OPENAI_API_KEY")
-    if key and key.strip():
-        return key.strip()
-    env_file = ROOT / ".env"
-    if env_file.exists():
-        try:
-            for line in env_file.read_text(encoding="utf-8").splitlines():
-                if line.startswith("OPENAI_API_KEY="):
-                    return line.split("=", 1)[1].strip()
-        except Exception:
-            pass
-    return DEFAULT_OPENAI_API_KEY
-
-
-def check_grammar_with_openai(spell_checked_text):
-    """
-    Uses OpenAI's Chat Completions API (e.g. gpt-4o-mini) to apply AI-powered
-    clinical grammar correction to the spell-checked text.
-    Returns (corrected_text, grammar_changes, status_str).
-    """
-    api_key = get_openai_api_key()
-    if not api_key:
-        return None, [], "No OpenAI API key configured"
-
-    url = "https://api.openai.com/v1/chat/completions"
-    system_prompt = (
-        "You are an expert clinical veterinary grammar corrector. "
-        "The input text has already been spell-checked. "
-        "Your task is to correct grammatical issues (subject-verb agreement, verb tenses, passive voice, auxiliary verbs, and sentence capitalization) "
-        "while strictly preserving clinical meaning and medical terminology. "
-        "Return a JSON object in this format: {\"corrected\": \"<corrected sentence>\", \"explanation\": \"<brief note>\"}"
-    )
-
-    payload = {
-        "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": spell_checked_text}
-        ],
-        "temperature": 0.1,
-        "response_format": {"type": "json_object"}
-    }
-
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        }
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=10) as res:
-            resp_data = json.loads(res.read().decode("utf-8"))
-            parsed = json.loads(resp_data["choices"][0]["message"]["content"])
-            openai_corrected = parsed.get("corrected")
-            explanation = parsed.get("explanation", "OpenAI grammar correction")
-            if openai_corrected and openai_corrected.strip():
-                changes = []
-                old_tokens = re.findall(r"\s+|\S+", spell_checked_text)
-                new_tokens = re.findall(r"\s+|\S+", openai_corrected)
-                for tag, i, j, a, b in difflib.SequenceMatcher(None, old_tokens, new_tokens, autojunk=False).get_opcodes():
-                    if tag != "equal":
-                        changes.append(("".join(old_tokens[i:j]), "".join(new_tokens[a:b]), "Grammar", explanation))
-                return openai_corrected, changes, "OpenAI (gpt-4o-mini) Active"
-    except urllib.error.HTTPError as e:
-        err_str = e.read().decode("utf-8")
-        if "credit_balance_exhausted" in err_str or "insufficient_quota" in err_str:
-            return None, [], "OpenAI Quota Exhausted (using Enhanced Clinical Grammar Engine)"
-        return None, [], f"OpenAI HTTP {e.code}: {e.reason}"
-    except Exception as e:
-        return None, [], f"OpenAI Error: {str(e)}"
-
-    return None, [], "OpenAI empty response"
-
-
 def grammar_check_stage(tool, text):
     """
     STAGE 2: Grammar Check.
     Applied to the text AFTER spelling has been checked and corrected.
-    1. Tries OpenAI grammar correction using the provided OpenAI API key.
-    2. If OpenAI is unavailable or quota exhausted, falls back to Enhanced Clinical Grammar Rules + LanguageTool.
+    Powered by Enhanced Clinical Grammar Rules + LanguageTool.
     """
-    # 2A. Attempt OpenAI Grammar Correction
-    openai_corrected, openai_changes, openai_status = check_grammar_with_openai(text)
-    if openai_corrected:
-        return openai_corrected, openai_changes, openai_status
-
-    # 2B. Fallback to Enhanced Clinical Grammar Rules + LanguageTool
     enhanced_text, enhanced_changes = enhance_clinical_grammar(text)
     corrected, seen, history = enhanced_text, {enhanced_text}, list(enhanced_changes)
 
     for _ in range(6):
         matches = sorted(tool.check(corrected), key=lambda match: match.offset)
-        # Select grammar, syntax, and agreement rules (non-misspelling)
         grammar_matches = [
             m for m in matches 
             if getattr(m, 'rule_issue_type', '') != 'misspelling' and m.replacements
@@ -476,7 +383,7 @@ def grammar_check_stage(tool, text):
         corrected = updated
         history.extend(changes)
 
-    return corrected, history, openai_status
+    return corrected, history
 
 
 def correct_text(text):
@@ -491,8 +398,7 @@ def correct_text(text):
             "original": original, 
             "corrected": original, 
             "spell_checked": original,
-            "grammar_engine": "LanguageTool",
-            "openai_status": "Idle",
+            "grammar_engine": "Enhanced Clinical Grammar + LanguageTool",
             "edits": [], 
             "grammar": {"issue_count": 0, "issues": []}
         }
@@ -503,8 +409,8 @@ def correct_text(text):
         # STEP 1: Apply spell check (Stage 1) to the raw user input
         after_spell_check, spell_history = spell_check_stage(tool, original)
 
-        # STEP 2: Apply grammar check (Stage 2: OpenAI with fallback) to the spell-checked text
-        after_grammar_check, grammar_history, openai_status = grammar_check_stage(tool, after_spell_check)
+        # STEP 2: Apply grammar check (Stage 2) to the spell-checked text
+        after_grammar_check, grammar_history = grammar_check_stage(tool, after_spell_check)
 
         final_corrected = after_grammar_check
 
@@ -574,14 +480,11 @@ def correct_text(text):
             if getattr(m, "rule_issue_type", "") != "misspelling"
         ]
 
-        engine_name = "OpenAI (gpt-4o-mini)" if "Active" in openai_status else "Enhanced Clinical Grammar + LanguageTool"
-
         return {
             "original": original,
             "corrected": final_corrected,
             "spell_checked": after_spell_check,
-            "grammar_engine": engine_name,
-            "openai_status": openai_status,
+            "grammar_engine": "Enhanced Clinical Grammar + LanguageTool",
             "edits": edits,
             "grammar": {
                 "issue_count": len(remaining_grammar_issues),
