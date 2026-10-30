@@ -1,5 +1,6 @@
 """Local grammar and spelling correction using LanguageTool, without PyTorch."""
 
+
 import atexit
 import difflib
 import os
@@ -7,9 +8,11 @@ import re
 import threading
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parent
 TOOL = None
 LOCK = threading.Lock()
+
 
 
 def load_tool():
@@ -28,9 +31,11 @@ def load_tool():
         os.environ.setdefault("LTP_PATH", str(ROOT / ".runtime" / "languagetool"))
         import language_tool_python
 
+
         TOOL = language_tool_python.LanguageTool("en-US", host="127.0.0.1")
         atexit.register(TOOL.close)
     return TOOL
+
 
 
 # Common veterinary and clinical words to prioritize for full word spelling resolution
@@ -74,7 +79,7 @@ def is_abbreviation(candidate, original):
     return False
 
 
-def pick_best_replacement(original, replacements):
+def pick_best_spelling_replacement(original, replacements):
     """
     Selects the best genuine, spelled-out word candidate, strictly eliminating abbreviations.
     """
@@ -93,33 +98,33 @@ def pick_best_replacement(original, replacements):
     return valid[0]
 
 
-def _autocorrect_single_stage(tool, text):
-    """Executes a full iterative autocorrection stage resolving conflicting rules without abbreviations."""
+def spell_check_stage(tool, text):
+    """
+    STAGE 1: Spell Check.
+    Detects and corrects spelling errors in user input, resolving misspelled tokens to full words.
+    """
     corrected, seen, history = text, {text}, []
-    for _ in range(8):
+    for _ in range(6):
         matches = sorted(tool.check(corrected), key=lambda match: match.offset)
-        selected, grammar_sentences = [], set()
-        for match in reversed(matches):
-            if not match.replacements:
-                continue
-            if getattr(match, "rule_issue_type", "") != "misspelling":
-                sentence = len(re.findall(r"[.!?\n]", corrected[:match.offset]))
-                if sentence in grammar_sentences:
-                    continue
-                grammar_sentences.add(sentence)
-            selected.append(match)
+        spelling_matches = [
+            m for m in matches 
+            if getattr(m, 'rule_issue_type', '') == 'misspelling' and m.replacements
+        ]
+        if not spelling_matches:
+            break
+
         parts, cursor, changes = [], 0, []
-        for match in sorted(selected, key=lambda item: item.offset):
+        for match in spelling_matches:
             start, end = match.offset, match.offset + match.error_length
             if start < cursor or not 0 <= start <= end <= len(corrected):
                 continue
             before = corrected[start:end]
-            replacement = pick_best_replacement(before, match.replacements)
+            replacement = pick_best_spelling_replacement(before, match.replacements)
             if replacement == before or is_abbreviation(replacement, before):
                 continue
             parts.extend((corrected[cursor:start], replacement))
             cursor = end
-            changes.append((before, replacement, getattr(match, "rule_issue_type", "grammar"), getattr(match, "message", "")))
+            changes.append((before, replacement, 'Spelling', match.message or 'Spelling correction'))
         parts.append(corrected[cursor:])
         updated = "".join(parts)
         if updated in seen:
@@ -130,41 +135,173 @@ def _autocorrect_single_stage(tool, text):
     return corrected, history
 
 
-def correct_text(text):
+def grammar_check_stage(tool, text):
     """
-    Two-stage cascaded autocorrection:
-    Stage 1: Autocorrects initial user input for spelling errors, strictly avoiding abbreviations.
-    Stage 2: The output of Stage 1 again undergoes autocorrection to ensure that
-             fixing spelling has not introduced or revealed secondary grammatical issues.
+    STAGE 2: Grammar Check.
+    Applied to the text AFTER spelling has been checked and corrected.
+    Handles subject-verb agreement, verb tense, articles, and sentence grammar.
+    """
+    corrected, seen, history = text, {text}, []
+    for _ in range(6):
+        matches = sorted(tool.check(corrected), key=lambda match: match.offset)
+        # Select grammar, syntax, and agreement rules (non-misspelling)
+        grammar_matches = [
+            m for m in matches 
+            if getattr(m, 'rule_issue_type', '') != 'misspelling' and m.replacements
+        ]
+        if not grammar_matches:
+            break
+
+        selected, grammar_sentences = [], set()
+        for match in reversed(grammar_matches):
+            sentence = len(re.findall(r"[.!?\n]", corrected[:match.offset]))
+            if sentence in grammar_sentences:
+                continue
+            grammar_sentences.add(sentence)
+            selected.append(match)
+
+        parts, cursor, changes = [], 0, []
+        for match in sorted(selected, key=lambda item: item.offset):
+            start, end = match.offset, match.offset + match.error_length
+            if start < cursor or not 0 <= start <= end <= len(corrected):
+                continue
+            before = corrected[start:end]
+            replacement = match.replacements[0]
+            if replacement == before:
+                continue
+            parts.extend((corrected[cursor:start], replacement))
+            cursor = end
+            changes.append((before, replacement, 'Grammar', match.message or 'Grammar correction'))
+        parts.append(corrected[cursor:])
+        updated = "".join(parts)
+        if updated in seen:
+            break
+        seen.add(updated)
+        corrected = updated
+        history.extend(changes)
+    return corrected, history
+
+
+def check_grammar(text):
+    """
+    Checks the supplied text for grammar, spelling, punctuation, and style issues.
+
+    Returns:
+        dict: Original text, issue count, detailed issues, and corrected text.
     """
     original = text.strip()
+
+    if not original:
+        return {
+            "text": original,
+            "issue_count": 0,
+            "issues": [],
+            "corrected": original,
+        }
+
+    with LOCK:
+        tool = load_tool()
+        matches = tool.check(original)
+        corrected = tool.correct(original)
+
+    issues = []
+
+    for match in matches:
+        start = match.offset
+        end = match.offset + match.error_length
+
+        issues.append(
+            {
+                "type": getattr(match, "rule_issue_type", None) or "grammar",
+                "rule_id": getattr(match, "ruleId", ""),
+                "message": getattr(match, "message", ""),
+                "original": original[start:end],
+                "suggestions": list(getattr(match, "replacements", []) or []),
+                "offset": start,
+                "length": match.error_length,
+                "context": getattr(match, "context", "").strip(),
+            }
+        )
+
+    return {
+        "text": original,
+        "issue_count": len(issues),
+        "issues": issues,
+        "corrected": corrected,
+    }
+
+
+def correct_text(text):
+    """
+    Two-step pipeline:
+    Step 1: Apply Spell Check to user input to fix misspellings to full words.
+    Step 2: Apply Grammar Check to the spell-checked text to fix subject-verb agreement and syntax.
+    """
+    original = text.strip()
+    if not original:
+        return {"original": original, "corrected": original, "edits": [], "grammar": {"issue_count": 0, "issues": []}}
+
     with LOCK:
         tool = load_tool()
 
-        # Pass 1: Autocorrect the user input (spelling only, fully spelled-out words)
-        first_pass_output, history_pass1 = _autocorrect_single_stage(tool, original)
+        # STEP 1: Apply spell check to the raw user input
+        after_spell_check, spell_history = spell_check_stage(tool, original)
 
-        # Pass 2: The output again undergoes full autocorrection
-        second_pass_output, history_pass2 = _autocorrect_single_stage(tool, first_pass_output)
+        # STEP 2: Apply grammar check to the spell-checked text
+        after_grammar_check, grammar_history = grammar_check_stage(tool, after_spell_check)
 
-        final_corrected = second_pass_output
+        final_corrected = after_grammar_check
+        all_history = spell_history + grammar_history
 
-        history = history_pass1 + history_pass2
-
-        # Show differences between the original and final corrected text, excluding abbreviations
+        # Build clean, accurate edits mapping original input to final corrected output
         old, new = re.findall(r"\s+|\S+", original), re.findall(r"\s+|\S+", final_corrected)
         edits = []
         for tag, i, j, a, b in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
             if tag == "equal":
                 continue
             before, after = "".join(old[i:j]), "".join(new[a:b])
-            # Never suggest an abbreviation as a replacement
             if is_abbreviation(after, before):
                 continue
-            spelling = any(kind == "misspelling" and src in before and dst in after for src, dst, kind, _ in history)
-            edits.append({"type": "Spelling" if spelling else "Grammar", "original": before,
-                          "replacement": after, "message": "Review this suggested change."})
-        return {"original": original, "corrected": final_corrected, "edits": edits}
+
+            # Determine whether this change was introduced by the spell check or grammar check stage
+            issue_type = "Grammar"
+            issue_message = "Review this suggested change."
+            for orig_tok, repl_tok, h_type, h_msg in all_history:
+                if orig_tok in before:
+                    issue_type = h_type
+                    issue_message = h_msg
+                    break
+
+            edits.append({
+                "type": issue_type,
+                "original": before,
+                "replacement": after,
+                "message": issue_message
+            })
+
+        # Detailed grammar inspection of the final output
+        remaining_grammar_issues = [
+            {
+                "type": getattr(m, "rule_issue_type", "grammar"),
+                "message": getattr(m, "message", ""),
+                "offset": m.offset,
+                "length": m.error_length
+            }
+            for m in tool.check(final_corrected)
+            if getattr(m, "rule_issue_type", "") != "misspelling"
+        ]
+
+        return {
+            "original": original,
+            "corrected": final_corrected,
+            "spell_checked": after_spell_check,
+            "edits": edits,
+            "grammar": {
+                "issue_count": len(remaining_grammar_issues),
+                "issues": remaining_grammar_issues
+            }
+        }
+
 
 
 def error_message(error):
