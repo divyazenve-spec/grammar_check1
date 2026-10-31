@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, Sparkles, AlertCircle, FileText, CheckCircle2, Loader2, ArrowRight,
-  Wand2, RotateCcw, Check, CheckCheck, BookOpen, SpellCheck
+  Wand2, RotateCcw, Check, CheckCheck, BookOpen, SpellCheck, Send
 } from 'lucide-react';
 import { api } from '../services/api';
 
 export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
   const [species, setSpecies] = useState('Canine');
   const [symptoms, setSymptoms] = useState('');
-  const [vitals, setVitals] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState(null);
 
@@ -59,7 +58,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
 
   if (!isOpen) return null;
 
-  // Manual Trigger for LanguageTool Correction
+  // Manual Trigger for Fix Grammar / LanguageTool Correction
   const handleManualCheck = async () => {
     if (!symptoms.trim()) {
       alert('Please enter text into the Chief Complaint box first.');
@@ -71,15 +70,60 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
 
     try {
       const res = await api.ai.correctText(symptoms);
-      if (res && res.edits && res.edits.length > 0) {
+      if (res && res.corrected && res.corrected.trim() !== symptoms.trim()) {
+        setCorrectionResult(res);
+      } else if (res && res.edits && res.edits.length > 0) {
         setCorrectionResult(res);
       } else {
-        alert('No grammar or spelling errors detected by LanguageTool!');
+        alert('No grammar, spelling, or sentence formation errors were detected.');
         setCorrectionResult(null);
       }
     } catch (err) {
       console.warn('Manual correction failed:', err);
-      alert('LanguageTool server is loading. Please try again in a few moments.');
+      alert('The grammar correction service is loading. Please try again in a few moments.');
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  // Send button handler: automatically fixes grammar and spelling in the complaint box on click
+  const handleSendCorrect = async () => {
+    if (!symptoms.trim()) {
+      alert('Please enter text into the Chief Complaint box first.');
+      return;
+    }
+
+    setIsChecking(true);
+    setOriginalSymptomsBeforeFix(symptoms);
+
+    try {
+      let correctedText = correctionResult?.corrected;
+      let res = correctionResult;
+
+      if (!correctedText || correctedText.trim() === symptoms.trim()) {
+        res = await api.ai.correctText(symptoms);
+        correctedText = res?.corrected;
+      }
+
+      if (correctedText && correctedText.trim() !== symptoms.trim()) {
+        setSymptoms(correctedText);
+        setSuccessNotice(true);
+        setTimeout(() => setSuccessNotice(false), 4000);
+
+        // Run secondary pass to catch any cascaded grammar changes
+        const secondPassRes = await api.ai.correctText(correctedText);
+        if (secondPassRes && secondPassRes.corrected && secondPassRes.corrected.trim() !== correctedText.trim() && secondPassRes.edits && secondPassRes.edits.length > 0) {
+          setCorrectionResult(secondPassRes);
+        } else {
+          setCorrectionResult(null);
+        }
+      } else {
+        alert('No grammar or spelling errors were detected.');
+        setCorrectionResult(null);
+      }
+    } catch (err) {
+      console.warn('Send correction failed:', err);
+      alert('The LanguageTool server is loading. Please try again in a few moments.');
     } finally {
       setIsChecking(false);
     }
@@ -163,33 +207,33 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
 
   const handleAnalyze = async () => {
     if (!symptoms.trim()) {
-      alert('Please enter clinical signs or findings');
+      alert('Please enter clinical signs or findings.');
       return;
     }
 
     setIsLoading(true);
     try {
-      const data = await api.ai.diagnose({ species, symptoms, vitals });
+      const data = await api.ai.diagnose({ species, symptoms, vitals: '' });
       setResult(data);
     } catch (err) {
       console.warn('Backend AI diagnosis fallback to offline heuristic:', err);
       setResult({
         primaryDifferentials: [
-          { name: "Acute Gastric Dilatation-Volvulus (GDV)", likelihood: "High (85%)", reasoning: "Rapid abdominal tympany, non-productive retching, and tachycardia in deep-chested canine." },
-          { name: "Severe Acute Pancreatitis with Peritonitis", likelihood: "Moderate (45%)", reasoning: "Severe cranial abdominal pain and elevated heart rate with potential systemic inflammatory response." },
+          { name: "Acute Gastric Dilatation-Volvulus (GDV)", likelihood: "High (85%)", reasoning: "Rapid abdominal tympany, non-productive retching, and tachycardia in a deep-chested canine." },
+          { name: "Severe Acute Pancreatitis with Peritonitis", likelihood: "Moderate (45%)", reasoning: "Severe cranial abdominal pain and an elevated heart rate with a potential systemic inflammatory response." },
           { name: "Splenic Torsion / Rupture with Hemoperitoneum", likelihood: "Moderate (40%)", reasoning: "Weak femoral pulses and pale mucous membranes consistent with acute hypovolemia." }
         ],
         recommendedDiagnostics: [
-          "Right lateral abdominal radiograph (Double-bubble / reverse C sign verification)",
-          "Abdominal FAST (AFAST) scan to rule out peritoneal free fluid in spleno-renal pouch",
-          "Serial blood lactate monitoring (Lactate > 6 mmol/L signals gastric ischemia)",
-          "Complete Blood Count + Serum Lipase / Spec cPL"
+          "Right lateral abdominal radiograph (double-bubble / reverse C-sign verification)",
+          "Abdominal FAST (AFAST) scan to rule out peritoneal free fluid in the spleno-renal pouch",
+          "Serial blood lactate monitoring (lactate > 6 mmol/L signals gastric ischemia)",
+          "Complete Blood Count with Serum Lipase / Spec cPL"
         ],
         emergencyActionProtocol: [
-          "Place two large-bore IV catheters (18G or 16G) in cephalic veins.",
-          "Rapid isotonic crystalloid shock bolus (20-30 mL/kg over 15-20 min).",
-          "Attempt gentle orogastric decompression or 14G percutaneous trocarization in right paracostal area.",
-          "Prepare patient for emergency exploratory laparotomy and gastropexy."
+          "Place two large-bore IV catheters (18G or 16G) in the cephalic veins.",
+          "Administer a rapid isotonic crystalloid shock bolus (20–30 mL/kg over 15–20 minutes).",
+          "Attempt gentle orogastric decompression or 14G percutaneous trocarization in the right paracostal area.",
+          "Prepare the patient for emergency exploratory laparotomy and gastropexy."
         ]
       });
     } finally {
@@ -208,7 +252,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
             </div>
             <div>
               <h3 className="modal-title" style={{ color: '#FFF', fontSize: '18px' }}>AI Clinical Case Assistant</h3>
-              <p style={{ fontSize: '12px', color: '#C8DEC9' }}>Real-time differential diagnosis & emergency triage guidance</p>
+              <p style={{ fontSize: '12px', color: '#C8DEC9' }}>Real-time differential diagnosis and emergency triage guidance</p>
             </div>
           </div>
           <button className="btn-close-modal" onClick={onClose} style={{ color: '#FFF' }}>
@@ -282,8 +326,9 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                       </span>
                     </div>
 
-                    {/* Manual Check Button */}
+                    {/* Fix Grammar Button */}
                     <button
+                      id="fix-grammar-btn"
                       type="button"
                       onClick={handleManualCheck}
                       disabled={isChecking}
@@ -300,10 +345,10 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                         padding: '2px 6px',
                         borderRadius: '4px'
                       }}
-                      title="Run manual Grammar & Spell Check"
+                      title="Fix Grammar, spelling, and sentence formation"
                     >
                       <Wand2 size={13} />
-                      <span>Check Details</span>
+                      <span>Fix Grammar</span>
                     </button>
                   </div>
                 </div>
@@ -315,42 +360,79 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                     style={{ 
                       width: '100%', 
                       resize: 'vertical',
+                      paddingRight: '50px',
+                      paddingBottom: '36px',
                       borderColor: (correctionResult && correctionResult.edits && correctionResult.edits.length > 0) ? '#F59E0B' : undefined,
                       transition: 'border-color 0.2s ease'
                     }}
-                    placeholder="e.g. 5-year-old German Shepherd, acute abdominal distension, unproductive retching for 3 hours, restlessness, hypersalivation..."
+                    placeholder="e.g., 5-year-old German Shepherd, acute abdominal distension, non-productive retching for 3 hours, restlessness, hypersalivation..."
                     value={symptoms}
                     onChange={(e) => setSymptoms(e.target.value)}
                   />
 
-                  {/* Undo Button */}
-                  {originalSymptomsBeforeFix !== null && (
+                  {/* Bottom-right action buttons */}
+                  <div style={{
+                    position: 'absolute',
+                    right: '10px',
+                    bottom: '10px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}>
+                    {/* Undo Button */}
+                    {originalSymptomsBeforeFix !== null && (
+                      <button
+                        type="button"
+                        onClick={handleUndo}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          background: '#FFFFFF',
+                          border: '1px solid #CBD5E1',
+                          borderRadius: '6px',
+                          padding: '4px 8px',
+                          fontSize: '11px',
+                          color: '#475569',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                        }}
+                        title="Revert to the original text before corrections"
+                      >
+                        <RotateCcw size={12} />
+                        <span>Undo</span>
+                      </button>
+                    )}
+
+                    {/* Send Button to Trigger Grammar & Spelling Change */}
                     <button
                       type="button"
-                      onClick={handleUndo}
+                      onClick={handleSendCorrect}
+                      disabled={isChecking || !symptoms.trim()}
                       style={{
-                        position: 'absolute',
-                        right: '8px',
-                        bottom: '12px',
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '8px',
+                        background: symptoms.trim() ? '#0D472B' : '#E5E9E5',
+                        color: symptoms.trim() ? '#FFFFFF' : '#94A3B8',
+                        border: 'none',
+                        cursor: symptoms.trim() && !isChecking ? 'pointer' : 'not-allowed',
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '4px',
-                        background: '#FFFFFF',
-                        border: '1px solid #CBD5E1',
-                        borderRadius: '4px',
-                        padding: '3px 8px',
-                        fontSize: '11px',
-                        color: '#475569',
-                        fontWeight: '600',
-                        cursor: 'pointer',
-                        boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                        justifyContent: 'center',
+                        transition: 'all 0.2s ease',
+                        boxShadow: symptoms.trim() ? '0 2px 4px rgba(13, 71, 43, 0.25)' : 'none'
                       }}
-                      title="Revert to original text before corrections"
+                      title="Correct grammar and spelling"
                     >
-                      <RotateCcw size={12} />
-                      <span>Undo</span>
+                      {isChecking ? (
+                        <Loader2 size={15} className="animate-spin" />
+                      ) : (
+                        <Send size={15} />
+                      )}
                     </button>
-                  )}
+                  </div>
                 </div>
 
                 {/* Success Banner */}
@@ -368,7 +450,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                     gap: '6px'
                   }}>
                     <CheckCheck size={14} color="#059669" />
-                    <span>All grammar and spelling corrections applied!</span>
+                    <span>All grammar and spelling corrections have been applied!</span>
                   </div>
                 )}
 
@@ -428,7 +510,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                         gap: '6px'
                       }}>
                         <Sparkles size={13} color="#2563EB" />
-                        <span>Hugging Face token integrated. (To enable Serverless Inference, check "Make calls to the Serverless Inference API" on huggingface.co/settings/tokens; local LanguageTool engine is actively correcting text).</span>
+                        <span>A Hugging Face token is integrated. (To enable Serverless Inference, select "Make calls to the Serverless Inference API" at huggingface.co/settings/tokens; the local LanguageTool engine is actively correcting text.)</span>
                       </div>
                     )}
 
@@ -445,8 +527,29 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                         color: '#1E293B',
                         lineHeight: '1.4'
                       }}>
-                        <span style={{ fontWeight: '600', color: '#0D472B', marginRight: '6px' }}>Proposed:</span>
-                        <span>{correctionResult.corrected}</span>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                          <span style={{ fontWeight: '600', color: '#0D472B' }}>Corrected Output:</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(correctionResult.corrected);
+                              alert('Corrected text copied to clipboard!');
+                            }}
+                            style={{
+                              background: '#F1F5F9',
+                              border: '1px solid #CBD5E1',
+                              borderRadius: '4px',
+                              padding: '1px 6px',
+                              color: '#475569',
+                              fontSize: '11px',
+                              fontWeight: '600',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Copy
+                          </button>
+                        </div>
+                        <span id="corrected-output-text">{correctionResult.corrected}</span>
                       </div>
                     )}
 
@@ -471,10 +574,10 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                             fontWeight: '700',
                             padding: '1px 5px',
                             borderRadius: '4px',
-                            background: edit.stage === 1 || edit.type === 'Spelling' ? '#FEE2E2' : '#E0E7FF',
-                            color: edit.stage === 1 || edit.type === 'Spelling' ? '#991B1B' : '#3730A3'
+                            background: edit.type === 'Sentence Formation' ? '#E0F2FE' : (edit.stage === 1 || edit.type === 'Spelling' ? '#FEE2E2' : '#E0E7FF'),
+                            color: edit.type === 'Sentence Formation' ? '#0369A1' : (edit.stage === 1 || edit.type === 'Spelling' ? '#991B1B' : '#3730A3')
                           }}>
-                            {edit.stage_label || (edit.stage === 1 || edit.type === 'Spelling' ? 'Stage 1: Spelling' : 'Stage 2: Grammar')}
+                            {edit.stage_label || (edit.type === 'Sentence Formation' ? 'Stage 2 (Sentence Formation)' : (edit.stage === 1 || edit.type === 'Spelling' ? 'Stage 1: Spelling' : 'Stage 3: Grammar'))}
                           </span>
 
                           <span style={{
@@ -501,7 +604,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                               alignItems: 'center',
                               gap: '2px'
                             }}
-                            title={edit.message || 'Apply suggested change'}
+                            title={edit.message || 'Apply the suggested change'}
                           >
                             <span>{edit.replacement}</span>
                             <Check size={11} />
@@ -513,44 +616,10 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                 )}
               </div>
 
-              <div>
-                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', marginBottom: '6px', color: '#121A15' }}>
-                  Physical Exam & Vitals (Optional)
-                </label>
-                <input
-                  type="text"
-                  className="custom-filter-select"
-                  style={{ width: '100%' }}
-                  placeholder="e.g. HR 175 bpm, weak femoral pulses, CRT > 2.5s, pale tacky mucosa, tympanic percussion"
-                  value={vitals}
-                  onChange={(e) => setVitals(e.target.value)}
-                />
-              </div>
-
               <div style={{ padding: '12px 14px', background: '#F8F9FA', borderRadius: '8px', border: '1px solid #E5E9E5', fontSize: '12.5px', color: '#64726A', display: 'flex', gap: '8px' }}>
                 <AlertCircle size={17} color="#C5A059" style={{ flexShrink: 0, marginTop: '2px' }} />
-                <span>AI Case Assistant provides rapid diagnostic suggestions based on peer-reviewed veterinary literature. Clinical decision remains with the attending veterinarian.</span>
+                <span>The AI Case Assistant provides rapid diagnostic suggestions based on peer-reviewed veterinary literature. The final clinical decision remains with the attending veterinarian.</span>
               </div>
-
-              <button
-                type="button"
-                className="btn-submit-post"
-                style={{ width: '100%', justifyContent: 'center', padding: '12px', marginTop: '6px' }}
-                onClick={handleAnalyze}
-                disabled={isLoading}
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 size={16} className="animate-spin" />
-                    <span>Analyzing Clinical Parameters...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles size={16} color="#F8E2AF" />
-                    <span>Generate Differential Diagnoses</span>
-                  </>
-                )}
-              </button>
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
@@ -614,7 +683,7 @@ export function AiCaseAssistantModal({ isOpen, onClose, onInsertCase }) {
                   onClick={() => {
                     onClose();
                     if (onInsertCase) {
-                      onInsertCase(`[AI Case Review] ${species}: ${symptoms.slice(0, 80)}... Potential GDV/Acute Abdomen. Stabilized with IV fluid resuscitation.`);
+                      onInsertCase(`[AI Case Review] ${species}: ${symptoms.slice(0, 80)}... Potential GDV / acute abdomen. Stabilized with IV fluid resuscitation.`);
                     }
                   }}
                 >
